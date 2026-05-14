@@ -48,4 +48,13 @@ PLIST
 
 printf 'APPL????' > "$CONTENTS_DIR/PkgInfo"
 
+DIST_DIR="dist"
+rm -rf "$DIST_DIR"
+mkdir -p "$DIST_DIR"
+(
+    cd .build
+    ditto -c -k --keepParent "Codex Account Tracker.app" "../$DIST_DIR/Codex Account Tracker.app.zip"
+)
+
 echo "$APP_DIR"
+echo "$DIST_DIR/Codex Account Tracker.app.zip"

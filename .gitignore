@@ -7,6 +7,11 @@
 # Local app bundles generated during development
 *.app/
 
+# Committed packaged app artifacts
+dist/*
+!dist/.gitkeep
+!dist/*.zip
+
 # Xcode/user-local state, if this project is ever opened in Xcode
 *.xcuserdata/
 DerivedData/
