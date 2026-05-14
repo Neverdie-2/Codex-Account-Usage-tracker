@@ -1,0 +1,21 @@
+.DS_Store
+
+# SwiftPM build output
+.build/
+.swiftpm/
+
+# Local app bundles generated during development
+*.app/
+
+# Xcode/user-local state, if this project is ever opened in Xcode
+*.xcuserdata/
+DerivedData/
+
+# Local runtime data. The app stores real account snapshots here at runtime,
+# but this file should never live inside the repo.
+accounts.json
+
+# Logs and temporary files
+*.log
+tmp/
+*.tmp
