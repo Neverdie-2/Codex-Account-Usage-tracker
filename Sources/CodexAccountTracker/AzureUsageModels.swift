@@ -2,7 +2,10 @@ import Foundation
 
 enum AzureUsageTimeWindow: String, CaseIterable, Identifiable, Codable {
     case last24Hours
+    case last3Days
     case last7Days
+    case last14Days
+    case last30Days
     case sinceDate
     case allTime
 
@@ -12,10 +15,16 @@ enum AzureUsageTimeWindow: String, CaseIterable, Identifiable, Codable {
         switch self {
         case .last24Hours:
             return "Last 24h"
+        case .last3Days:
+            return "Last 3d"
         case .last7Days:
             return "Last 7d"
+        case .last14Days:
+            return "Last 14d"
+        case .last30Days:
+            return "Last 30d"
         case .sinceDate:
-            return "Since date"
+            return "Custom"
         case .allTime:
             return "All time"
         }
@@ -25,8 +34,14 @@ enum AzureUsageTimeWindow: String, CaseIterable, Identifiable, Codable {
         switch self {
         case .last24Hours:
             return now.addingTimeInterval(-24 * 60 * 60)
+        case .last3Days:
+            return now.addingTimeInterval(-3 * 24 * 60 * 60)
         case .last7Days:
             return now.addingTimeInterval(-7 * 24 * 60 * 60)
+        case .last14Days:
+            return now.addingTimeInterval(-14 * 24 * 60 * 60)
+        case .last30Days:
+            return now.addingTimeInterval(-30 * 24 * 60 * 60)
         case .sinceDate:
             return customStartDate
         case .allTime:
@@ -65,7 +80,11 @@ enum CodexLogUsageProvider: String, Equatable, Codable {
 
 enum CodexUsageScanMode: String, CaseIterable, Identifiable, Codable {
     case recent24Hours
+    case recent3Days
     case recent7Days
+    case recent14Days
+    case recent30Days
+    case sinceDate
     case allTime
 
     var id: String { rawValue }
@@ -73,17 +92,29 @@ enum CodexUsageScanMode: String, CaseIterable, Identifiable, Codable {
     var label: String {
         switch self {
         case .recent24Hours: return "Last 24h"
+        case .recent3Days: return "Last 3d"
         case .recent7Days: return "Last 7d"
+        case .recent14Days: return "Last 14d"
+        case .recent30Days: return "Last 30d"
+        case .sinceDate: return "Custom"
         case .allTime: return "All time"
         }
     }
 
-    func startDate(now: Date) -> Date? {
+    func startDate(now: Date, customStartDate: Date) -> Date? {
         switch self {
         case .recent24Hours:
             return now.addingTimeInterval(-24 * 60 * 60)
+        case .recent3Days:
+            return now.addingTimeInterval(-3 * 24 * 60 * 60)
         case .recent7Days:
             return now.addingTimeInterval(-7 * 24 * 60 * 60)
+        case .recent14Days:
+            return now.addingTimeInterval(-14 * 24 * 60 * 60)
+        case .recent30Days:
+            return now.addingTimeInterval(-30 * 24 * 60 * 60)
+        case .sinceDate:
+            return customStartDate
         case .allTime:
             return nil
         }
@@ -96,7 +127,11 @@ enum CodexUsageScanMode: String, CaseIterable, Identifiable, Codable {
     var usageWindow: AzureUsageTimeWindow {
         switch self {
         case .recent24Hours: return .last24Hours
+        case .recent3Days: return .last3Days
         case .recent7Days: return .last7Days
+        case .recent14Days: return .last14Days
+        case .recent30Days: return .last30Days
+        case .sinceDate: return .sinceDate
         case .allTime: return .allTime
         }
     }
@@ -245,7 +280,12 @@ struct AzureModelPricing: Equatable, Codable {
     }
 
     private static func usd(_ value: Double) -> String {
-        value.formatted(.currency(code: "USD").precision(.fractionLength(2)))
+        let formatter = NumberFormatter()
+        formatter.numberStyle = .currency
+        formatter.currencySymbol = "$"
+        formatter.minimumFractionDigits = 2
+        formatter.maximumFractionDigits = 2
+        return formatter.string(from: NSNumber(value: value)) ?? "$\(String(format: "%.2f", value))"
     }
 }
 
@@ -278,7 +318,70 @@ struct AzureUsageRecord: Equatable, Identifiable, Codable {
     var resource: String
     var deployment: String
     var model: String
+    var projectPath: String
+    var projectName: String
     var usage: AzureTokenUsage
+
+    init(
+        id: String,
+        sessionID: String,
+        filePath: String,
+        timestamp: Date,
+        endpoint: String,
+        resource: String,
+        deployment: String,
+        model: String,
+        projectPath: String,
+        projectName: String? = nil,
+        usage: AzureTokenUsage
+    ) {
+        self.id = id
+        self.sessionID = sessionID
+        self.filePath = filePath
+        self.timestamp = timestamp
+        self.endpoint = endpoint
+        self.resource = resource
+        self.deployment = deployment
+        self.model = model
+        self.projectPath = Self.normalizedProjectPath(projectPath)
+        self.projectName = Self.normalizedProjectName(projectName, projectPath: self.projectPath)
+        self.usage = usage
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        id = try container.decode(String.self, forKey: .id)
+        sessionID = try container.decode(String.self, forKey: .sessionID)
+        filePath = try container.decode(String.self, forKey: .filePath)
+        timestamp = try container.decode(Date.self, forKey: .timestamp)
+        endpoint = try container.decode(String.self, forKey: .endpoint)
+        resource = try container.decode(String.self, forKey: .resource)
+        deployment = try container.decode(String.self, forKey: .deployment)
+        model = try container.decode(String.self, forKey: .model)
+        projectPath = Self.normalizedProjectPath(try container.decodeIfPresent(String.self, forKey: .projectPath))
+        projectName = Self.normalizedProjectName(try container.decodeIfPresent(String.self, forKey: .projectName), projectPath: projectPath)
+        usage = try container.decode(AzureTokenUsage.self, forKey: .usage)
+    }
+
+    static let unknownProject = "unknown project"
+    static let chatProject = "Codex chats"
+
+    static func normalizedProjectPath(_ value: String?) -> String {
+        let trimmed = value?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        return trimmed.isEmpty ? unknownProject : trimmed
+    }
+
+    static func projectName(for projectPath: String) -> String {
+        guard projectPath != unknownProject else { return unknownProject }
+        let trimmed = projectPath.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+        guard !trimmed.isEmpty else { return projectPath }
+        return URL(fileURLWithPath: trimmed).lastPathComponent
+    }
+
+    private static func normalizedProjectName(_ value: String?, projectPath: String) -> String {
+        let trimmed = value?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        return trimmed.isEmpty ? projectName(for: projectPath) : trimmed
+    }
 }
 
 struct AzureUsageGroup: Equatable, Identifiable, Codable {
@@ -290,6 +393,57 @@ struct AzureUsageGroup: Equatable, Identifiable, Codable {
     var model: String
     var pricing: AzureModelPricing
     var totals: AzureUsageTokenTotals
+}
+
+struct AzureUsageProjectModelGroup: Equatable, Identifiable, Codable {
+    var id: String { model }
+    var model: String
+    var pricing: AzureModelPricing
+    var totals: AzureUsageTokenTotals
+}
+
+struct AzureUsageProjectSessionGroup: Equatable, Identifiable, Codable {
+    var id: String { sessionID }
+    var sessionID: String
+    var filePath: String
+    var models: [String]
+    var totals: AzureUsageTokenTotals
+    var earliestActivity: Date?
+    var latestActivity: Date?
+
+    var shortSessionID: String {
+        String(sessionID.prefix(8))
+    }
+
+    var primaryModel: String {
+        models.first ?? AzureUsageScanner.unknownModel
+    }
+
+    var modelSummary: String {
+        if models.isEmpty { return AzureUsageScanner.unknownModel }
+        if models.count == 1 { return models[0] }
+        return "\(models[0]) +\(models.count - 1)"
+    }
+
+    var sourceFileName: String {
+        URL(fileURLWithPath: filePath).lastPathComponent
+    }
+}
+
+struct AzureUsageProjectGroup: Equatable, Identifiable, Codable {
+    var id: String { projectPath }
+    var projectPath: String
+    var projectName: String
+    var totals: AzureUsageTokenTotals
+    var sessionCount: Int
+    var earliestActivity: Date?
+    var latestActivity: Date?
+    var byModel: [AzureUsageProjectModelGroup]
+    var sessions: [AzureUsageProjectSessionGroup]
+
+    var isChatGroup: Bool {
+        projectPath == AzureUsageRecord.unknownProject || projectPath == AzureUsageRecord.chatProject
+    }
 }
 
 struct AzureUsageScanSummary: Equatable, Codable {
@@ -322,6 +476,7 @@ struct AzureUsageDashboard: Equatable, Codable {
     var totals = AzureUsageTokenTotals()
     var byEndpointDeployment: [AzureUsageGroup] = []
     var byModel: [AzureUsageGroup] = []
+    var byProject: [AzureUsageProjectGroup] = []
     var summary = AzureUsageScanSummary()
 
     static let empty = AzureUsageDashboard()

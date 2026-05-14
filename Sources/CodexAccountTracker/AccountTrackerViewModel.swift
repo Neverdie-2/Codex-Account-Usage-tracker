@@ -13,13 +13,41 @@ final class AccountTrackerViewModel: ObservableObject {
     @Published private(set) var displayNow = Date()
     @Published private(set) var azureUsage = AzureUsageDashboard.empty
     @Published private(set) var openAIUsage = AzureUsageDashboard.empty
+    @Published private(set) var openAIAPIBilling = OpenAIAPIBillingDashboard.empty
     @Published private(set) var isAzureRefreshing = false
     @Published private(set) var isOpenAIRefreshing = false
+    @Published private(set) var isOpenAIAPIBillingRefreshing = false
     @Published private(set) var azureLastScannedAt: Date?
     @Published private(set) var openAILastScannedAt: Date?
+    @Published private(set) var openAIAPIBillingLastScannedAt: Date?
+    @Published var openAIAdminKey: String {
+        didSet {
+            KeychainSecretStore.save(openAIAdminKey, account: Self.openAIAdminKeyAccount)
+        }
+    }
+    @Published var openAIAPIUsageWindow: OpenAIAPIUsageWindow = AppPreferences.openAIAPIUsageWindow {
+        didSet {
+            AppPreferences.openAIAPIUsageWindow = openAIAPIUsageWindow
+            rebuildOpenAIAPIBillingDashboard()
+        }
+    }
+    @Published var openAIAPICustomStartDate: Date = Calendar.current.date(byAdding: .day, value: -30, to: Date()) ?? Date() {
+        didSet {
+            if openAIAPIUsageWindow == .sinceDate {
+                rebuildOpenAIAPIBillingDashboard()
+            }
+        }
+    }
     @Published var openAIUsageScanMode: CodexUsageScanMode = .recent24Hours {
         didSet {
             rebuildOpenAIUsageDashboard()
+        }
+    }
+    @Published var openAICustomStartDate: Date = Calendar.current.date(byAdding: .day, value: -7, to: Date()) ?? Date() {
+        didSet {
+            if openAIUsageScanMode == .sinceDate {
+                rebuildOpenAIUsageDashboard()
+            }
         }
     }
     @Published var azureUsageWindow: AzureUsageTimeWindow = .last7Days {
@@ -48,12 +76,15 @@ final class AccountTrackerViewModel: ObservableObject {
 
     private let store = AccountStore()
     private let usageCacheStore = AzureUsageCacheStore()
+    private let openAIAPIBillingCacheStore = OpenAIAPIBillingCacheStore()
+    private let openAIAPIBillingClient = OpenAIAPIBillingClient()
     private let azureScanner = AzureUsageScanner()
     private let openAIUsageScanner = AzureUsageScanner(provider: .openai, logRoots: AzureUsageScanner.defaultLogRoots())
     private let server = CodexServerManager()
     private var client: CodexRPCClient?
     private var azureScanResult = AzureUsageScanResult.empty
     private var openAIScanResult = AzureUsageScanResult(provider: .openai)
+    private var openAIAPIBillingResult = OpenAIAPIBillingResult.empty
     private var refreshTask: Task<Void, Never>?
     private var displayClockTask: Task<Void, Never>?
     private var authMonitorTask: Task<Void, Never>?
@@ -65,9 +96,11 @@ final class AccountTrackerViewModel: ObservableObject {
     private var isRecoveringAuthChange = false
     private var lastAuthFileSignature: AuthFileSignature?
     private var lastAuthChangeRecoveryAt: Date?
+    private static let openAIAdminKeyAccount = "openai-admin-api-key"
 
     init() {
         endpointText = AppPreferences.endpoint
+        openAIAdminKey = KeychainSecretStore.load(account: Self.openAIAdminKeyAccount)
     }
 
     var storagePath: String {
@@ -78,6 +111,52 @@ final class AccountTrackerViewModel: ObservableObject {
         URL(string: endpointText.trimmingCharacters(in: .whitespacesAndNewlines))
     }
 
+    var selectableReportText: String {
+        var lines: [String] = [
+            "Codex Account Tracker",
+            endpointText,
+            statusText
+        ]
+
+        if let lastError {
+            lines.append(lastError)
+        }
+
+        lines.append("")
+
+        if accounts.isEmpty {
+            lines.append("No accounts saved yet")
+            lines.append("")
+        } else {
+            for account in accounts {
+                append(account: account, to: &lines)
+                lines.append("")
+            }
+        }
+
+        appendUsageDashboard(
+            openAIUsage,
+            title: "OpenAI Codex Usage",
+            windowLabel: openAIUsageScanMode.label,
+            lastScannedAt: openAILastScannedAt,
+            sessionCounterLabel: CodexLogUsageProvider.openai.sessionCounterLabel,
+            to: &lines
+        )
+        lines.append("")
+        appendUsageDashboard(
+            azureUsage,
+            title: "Azure Usage",
+            windowLabel: azureUsageWindow.label,
+            lastScannedAt: azureLastScannedAt,
+            sessionCounterLabel: CodexLogUsageProvider.azure.sessionCounterLabel,
+            to: &lines
+        )
+        lines.append("")
+        appendOpenAIAPIBillingDashboard(to: &lines)
+
+        return lines.joined(separator: "\n")
+    }
+
     func start() async {
         accounts = store.load()
         persistExpiredLocalResets(now: displayNow)
@@ -85,6 +164,7 @@ final class AccountTrackerViewModel: ObservableObject {
         startAuthFileMonitor()
         server.onOutput = { [weak self] output in
             guard !output.isEmpty else { return }
+            guard !Self.isRoutineServerOutput(output) else { return }
             self?.lastError = output
         }
         server.onTermination = { [weak self] endpoint in
@@ -111,18 +191,20 @@ final class AccountTrackerViewModel: ObservableObject {
     func refreshAzureUsage() {
         guard !isAzureRefreshing else { return }
         isAzureRefreshing = true
+        let previousResult = azureScanResult
+        let startDate = Self.incrementalUsageRefreshStartDate(from: previousResult)
 
         Task { [weak self, azureScanner, usageCacheStore] in
             let result = await Task.detached(priority: .utility) {
-                azureScanner.scan()
+                azureScanner.scan(since: startDate)
             }.value
 
             guard let self else { return }
             defer { isAzureRefreshing = false }
             let scannedAt = Date()
-            azureScanResult = result
+            azureScanResult = Self.mergedUsageResult(previousResult, with: result)
             azureLastScannedAt = scannedAt
-            usageCacheStore.save(result, scannedAt: scannedAt)
+            usageCacheStore.save(azureScanResult, scannedAt: scannedAt)
             rebuildAzureUsageDashboard()
         }
     }
@@ -130,31 +212,58 @@ final class AccountTrackerViewModel: ObservableObject {
     func refreshOpenAIUsage() {
         guard !isOpenAIRefreshing else { return }
         isOpenAIRefreshing = true
+        let previousResult = openAIScanResult
+        let startDate = Self.openAIUsageRefreshStartDate(
+            previousResult: previousResult,
+            scanMode: openAIUsageScanMode,
+            now: displayNow,
+            customStartDate: openAICustomStartDate
+        )
 
         Task { [weak self, openAIUsageScanner, usageCacheStore] in
             let result = await Task.detached(priority: .utility) {
-                openAIUsageScanner.scan()
+                openAIUsageScanner.scan(since: startDate)
             }.value
 
             guard let self else { return }
             defer { isOpenAIRefreshing = false }
             let scannedAt = Date()
-            openAIScanResult = result
+            openAIScanResult = Self.mergedUsageResult(previousResult, with: result)
             openAILastScannedAt = scannedAt
-            usageCacheStore.save(result, scannedAt: scannedAt)
+            usageCacheStore.save(openAIScanResult, scannedAt: scannedAt)
             rebuildOpenAIUsageDashboard()
+        }
+    }
+
+    func refreshOpenAIAPIBilling() {
+        guard !isOpenAIAPIBillingRefreshing else { return }
+        isOpenAIAPIBillingRefreshing = true
+        let adminKey = openAIAdminKey
+        let startDate = openAIAPIUsageWindow.startDate(now: displayNow, customStartDate: openAIAPICustomStartDate)
+
+        Task { [weak self, openAIAPIBillingClient, openAIAPIBillingCacheStore] in
+            do {
+                let result = try await openAIAPIBillingClient.fetch(adminKey: adminKey, startDate: startDate)
+
+                guard let self else { return }
+                defer { isOpenAIAPIBillingRefreshing = false }
+                let scannedAt = Date()
+                openAIAPIBillingResult = result
+                openAIAPIBillingLastScannedAt = scannedAt
+                openAIAPIBillingCacheStore.save(result, scannedAt: scannedAt)
+                rebuildOpenAIAPIBillingDashboard()
+                lastError = nil
+            } catch {
+                guard let self else { return }
+                isOpenAIAPIBillingRefreshing = false
+                lastError = error.localizedDescription
+            }
         }
     }
 
     func startOwnServerAndRefresh() {
         Task {
             await startServerAndRefresh(endpointText: AppPreferences.privateEndpoint)
-        }
-    }
-
-    func startSharedServerAndRefresh() {
-        Task {
-            await startServerAndRefresh(endpointText: AppPreferences.defaultEndpoint)
         }
     }
 
@@ -220,6 +329,167 @@ final class AccountTrackerViewModel: ObservableObject {
             openAILastScannedAt = openAICache.scannedAt
             rebuildOpenAIUsageDashboard()
         }
+
+        if let apiBillingCache = openAIAPIBillingCacheStore.load() {
+            openAIAPIBillingResult = apiBillingCache.result
+            openAIAPIBillingLastScannedAt = apiBillingCache.scannedAt
+            rebuildOpenAIAPIBillingDashboard()
+        }
+    }
+
+    private func append(account: AccountRecord, to lines: inout [String]) {
+        let isActive = account.email.caseInsensitiveCompare(activeEmail ?? "") == .orderedSame
+        lines.append(account.email)
+        lines.append("Last seen \(account.lastSeenAt)")
+        lines.append("Plan \(account.planType)\(isActive ? " active" : "")")
+
+        let primary = account.primaryDisplayWindow(now: displayNow)
+        let secondary = account.secondaryDisplayWindow(now: displayNow)
+        appendQuotaWindow(primary, title: "5-hour", to: &lines)
+        appendQuotaWindow(secondary, title: "Weekly", to: &lines)
+
+        if !account.subscriptionExpiresAt.isEmpty {
+            lines.append("Subscription expiration \(account.subscriptionExpiresAt)")
+        }
+    }
+
+    private func appendQuotaWindow(_ window: DisplayQuotaWindow, title: String, to lines: inout [String]) {
+        lines.append("\(title)")
+        lines.append("  Remaining \(formatPercent(window.remainingPercent))")
+        lines.append("  Used \(formatPercent(window.usedPercent))")
+        lines.append("  Reset \(DateFormats.display(epochSeconds: window.resetsAt))")
+        if let windowDurationMins = window.windowDurationMins {
+            lines.append("  Duration \(formatInteger(windowDurationMins)) min")
+        }
+    }
+
+    private func appendUsageDashboard(
+        _ dashboard: AzureUsageDashboard,
+        title: String,
+        windowLabel: String,
+        lastScannedAt: Date?,
+        sessionCounterLabel: String,
+        to lines: inout [String]
+    ) {
+        lines.append(title)
+        lines.append("Window \(windowLabel)")
+        lines.append("Input \(formatInteger(dashboard.totals.inputTokens))")
+        lines.append("Cached \(formatInteger(dashboard.totals.cachedInputTokens))")
+        lines.append("Uncached \(formatInteger(dashboard.totals.uncachedInputTokens))")
+        lines.append("Output \(formatInteger(dashboard.totals.outputTokens))")
+        lines.append("Total \(formatInteger(dashboard.totals.totalTokens))")
+        lines.append("Est. cost \(formatUSD(dashboard.totals.estimatedCostUSD))")
+
+        lines.append("")
+        lines.append("By provider / model deployment")
+        for group in dashboard.byEndpointDeployment.prefix(8) {
+            lines.append("  \(group.endpoint) | \(group.resource) | \(group.deployment)")
+            appendTokenTotals(group.totals, to: &lines)
+        }
+
+        lines.append("")
+        lines.append("By model")
+        for group in dashboard.byModel.prefix(8) {
+            lines.append("  \(group.model) - \(group.pricing.rateSummary)")
+            appendTokenTotals(group.totals, to: &lines)
+        }
+
+        lines.append("")
+        lines.append("By project")
+        for project in dashboard.byProject.prefix(12) {
+            lines.append("  \(project.projectName)")
+            if !project.isChatGroup {
+                lines.append("  \(project.projectPath)")
+            }
+            lines.append("  Sessions \(formatInteger(project.sessionCount)) | Events \(formatInteger(project.totals.eventCount)) | Total \(formatInteger(project.totals.totalTokens)) | Est. \(formatUSD(project.totals.estimatedCostUSD)) | Latest \(DateFormats.display(date: project.latestActivity))")
+            if !project.byModel.isEmpty {
+                lines.append("  Models")
+                for model in project.byModel.prefix(8) {
+                    lines.append("    \(model.model) - \(model.pricing.rateSummary)")
+                    appendTokenTotals(model.totals, indent: "    ", to: &lines)
+                }
+            }
+            if !project.sessions.isEmpty {
+                lines.append("  Sessions")
+                for session in project.sessions.prefix(12) {
+                    lines.append("    \(session.shortSessionID) \(session.modelSummary) | Events \(formatInteger(session.totals.eventCount)) | Total \(formatInteger(session.totals.totalTokens)) | Est. \(formatUSD(session.totals.estimatedCostUSD)) | Latest \(DateFormats.display(date: session.latestActivity)) | \(session.sourceFileName)")
+                }
+            }
+        }
+
+        lines.append("")
+        lines.append("Earliest event \(DateFormats.display(date: dashboard.summary.earliestEvent))")
+        lines.append("Latest event \(DateFormats.display(date: dashboard.summary.latestEvent))")
+        lines.append("Files scanned \(formatInteger(dashboard.summary.filesScanned))")
+        lines.append("Sessions scanned \(formatInteger(dashboard.summary.sessionsScanned))")
+        lines.append("\(sessionCounterLabel) \(formatInteger(dashboard.summary.azureSessions))")
+        lines.append("Events counted \(formatInteger(dashboard.summary.eventsCounted))")
+        lines.append("Duplicates skipped \(formatInteger(dashboard.summary.duplicateEventsSkipped))")
+        lines.append("Startup replay skipped \(formatInteger(dashboard.summary.startupReplayEventsSkipped))")
+        lines.append("Malformed skipped \(formatInteger(dashboard.summary.malformedEventsSkipped))")
+        lines.append("Last scanned \(DateFormats.display(date: lastScannedAt))")
+
+        if !dashboard.summary.warnings.isEmpty {
+            lines.append("Warnings")
+            lines.append(contentsOf: dashboard.summary.warnings.map { "  \($0)" })
+        }
+    }
+
+    private func appendTokenTotals(_ totals: AzureUsageTokenTotals, indent: String = "    ", to lines: inout [String]) {
+        lines.append("\(indent)Events \(formatInteger(totals.eventCount)) | Input \(formatInteger(totals.inputTokens)) | Output \(formatInteger(totals.outputTokens)) | Total \(formatInteger(totals.totalTokens)) | Est. \(formatUSD(totals.estimatedCostUSD))")
+    }
+
+    private func appendOpenAIAPIBillingDashboard(to lines: inout [String]) {
+        lines.append("OpenAI API Billing")
+        lines.append("Window \(openAIAPIUsageWindow.label)")
+        lines.append("Billed cost \(formatUSD(openAIAPIBilling.totalCostUSD))")
+        lines.append("Requests \(formatInteger(openAIAPIBilling.requestCount))")
+        lines.append("Input \(formatInteger(openAIAPIBilling.inputTokens))")
+        lines.append("Cached \(formatInteger(openAIAPIBilling.cachedInputTokens))")
+        lines.append("Output \(formatInteger(openAIAPIBilling.outputTokens))")
+        lines.append("Total \(formatInteger(openAIAPIBilling.totalTokens))")
+
+        lines.append("")
+        lines.append("API spend by project")
+        for group in openAIAPIBilling.byProject.prefix(8) {
+            lines.append("  \(group.label) \(formatUSD(group.amountUSD))")
+        }
+
+        lines.append("")
+        lines.append("API spend by key")
+        for group in openAIAPIBilling.byAPIKey.prefix(8) {
+            lines.append("  \(group.label) \(formatUSD(group.amountUSD))")
+        }
+
+        lines.append("")
+        lines.append("API usage by model")
+        for group in openAIAPIBilling.byModel.prefix(8) {
+            lines.append("  \(group.key) | Requests \(formatInteger(group.requestCount)) | Input \(formatInteger(group.inputTokens)) | Output \(formatInteger(group.outputTokens)) | Total \(formatInteger(group.totalTokens))")
+        }
+
+        lines.append("")
+        lines.append("Billing buckets \(formatInteger(openAIAPIBilling.summary.bucketsFetched))")
+        lines.append("Usage rows \(formatInteger(openAIAPIBilling.summary.usageRows))")
+        lines.append("Cost rows \(formatInteger(openAIAPIBilling.summary.costRows))")
+        lines.append("Last refreshed \(DateFormats.display(date: openAIAPIBillingLastScannedAt))")
+    }
+
+    private func formatPercent(_ value: Int?) -> String {
+        guard let value else { return "Unknown" }
+        return "\(value)%"
+    }
+
+    private func formatInteger(_ value: Int) -> String {
+        value.formatted(.number.locale(Locale(identifier: "en_US")))
+    }
+
+    private func formatUSD(_ value: Double) -> String {
+        let formatter = NumberFormatter()
+        formatter.numberStyle = .currency
+        formatter.currencySymbol = "$"
+        formatter.minimumFractionDigits = 2
+        formatter.maximumFractionDigits = 2
+        return formatter.string(from: NSNumber(value: value)) ?? "$\(String(format: "%.2f", value))"
     }
 
     private func rebuildAzureUsageDashboard() {
@@ -235,9 +505,89 @@ final class AccountTrackerViewModel: ObservableObject {
         openAIUsage = AzureUsageScanner.dashboard(
             from: openAIScanResult,
             window: openAIUsageScanMode.usageWindow,
-            customStartDate: Date(timeIntervalSince1970: 0),
+            customStartDate: openAICustomStartDate,
             now: displayNow
         )
+    }
+
+    private func rebuildOpenAIAPIBillingDashboard() {
+        let startDate = openAIAPIUsageWindow.startDate(now: displayNow, customStartDate: openAIAPICustomStartDate)
+        var filtered = OpenAIAPIBillingResult()
+        filtered.usageRecords = openAIAPIBillingResult.usageRecords.filter { $0.endTime > startDate }
+        filtered.costRecords = openAIAPIBillingResult.costRecords.filter { $0.endTime > startDate }
+        filtered.summary = openAIAPIBillingResult.summary
+        openAIAPIBilling = OpenAIAPIBillingDashboard.make(from: filtered)
+    }
+
+    private static func mergedUsageResult(_ existing: AzureUsageScanResult, with incremental: AzureUsageScanResult) -> AzureUsageScanResult {
+        guard !existing.records.isEmpty else { return incremental }
+
+        var recordsByID = Dictionary(uniqueKeysWithValues: existing.records.map { ($0.id, $0) })
+        for record in incremental.records {
+            recordsByID[record.id] = record
+        }
+
+        var result = AzureUsageScanResult(provider: existing.provider)
+        result.records = recordsByID.values.sorted { lhs, rhs in
+            if lhs.timestamp != rhs.timestamp { return lhs.timestamp < rhs.timestamp }
+            return lhs.id.localizedCaseInsensitiveCompare(rhs.id) == .orderedAscending
+        }
+
+        result.summary = mergedUsageSummary(existing.summary, incremental.summary, records: result.records)
+        return result
+    }
+
+    private static func incrementalUsageRefreshStartDate(from result: AzureUsageScanResult) -> Date? {
+        guard let latestKnownEvent = result.summary.latestEvent ?? result.records.map(\.timestamp).max() else {
+            return nil
+        }
+
+        return latestKnownEvent
+    }
+
+    private static func openAIUsageRefreshStartDate(
+        previousResult: AzureUsageScanResult,
+        scanMode: CodexUsageScanMode,
+        now: Date,
+        customStartDate: Date
+    ) -> Date? {
+        let selectedWindowStartDate = scanMode.startDate(now: now, customStartDate: customStartDate)
+        guard let incrementalStartDate = incrementalUsageRefreshStartDate(from: previousResult) else {
+            return selectedWindowStartDate
+        }
+
+        guard let selectedWindowStartDate else {
+            return nil
+        }
+
+        guard let earliestKnownEvent = previousResult.summary.earliestEvent ?? previousResult.records.map(\.timestamp).min() else {
+            return selectedWindowStartDate
+        }
+
+        if selectedWindowStartDate < earliestKnownEvent {
+            return selectedWindowStartDate
+        }
+
+        return incrementalStartDate
+    }
+
+    private static func mergedUsageSummary(
+        _ existing: AzureUsageScanSummary,
+        _ incremental: AzureUsageScanSummary,
+        records: [AzureUsageRecord]
+    ) -> AzureUsageScanSummary {
+        var summary = AzureUsageScanSummary()
+        summary.filesScanned = Set(records.map(\.filePath)).count
+        summary.sessionsScanned = Set(records.map(\.sessionID)).count
+        summary.providerSessions = summary.sessionsScanned
+        summary.eventsCounted = records.count
+        summary.duplicateEventsSkipped = existing.duplicateEventsSkipped + incremental.duplicateEventsSkipped
+        summary.startupReplayEventsSkipped = existing.startupReplayEventsSkipped + incremental.startupReplayEventsSkipped
+        summary.malformedEventsSkipped = existing.malformedEventsSkipped + incremental.malformedEventsSkipped
+        summary.earliestEvent = records.map(\.timestamp).min()
+        summary.latestEvent = records.map(\.timestamp).max()
+        summary.warnings = Array(Set(existing.warnings + incremental.warnings)).sorted()
+        return summary
     }
 
     private func startDisplayClock() {
@@ -480,10 +830,6 @@ final class AccountTrackerViewModel: ObservableObject {
         runningServerEndpoint = nil
     }
 
-    var isSharedServerRunning: Bool {
-        runningServerEndpoint == AppPreferences.defaultEndpoint
-    }
-
     var isPrivateServerRunning: Bool {
         runningServerEndpoint == AppPreferences.privateEndpoint
     }
@@ -664,6 +1010,22 @@ final class AccountTrackerViewModel: ObservableObject {
         return message.contains("token_invalidated")
             || message.contains("token has been invalidated")
             || (message.contains("401") && message.contains("unauthorized"))
+    }
+
+    private static func isRoutineServerOutput(_ output: String) -> Bool {
+        let lines = output
+            .split(whereSeparator: \.isNewline)
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() }
+            .filter { !$0.isEmpty }
+
+        guard !lines.isEmpty else { return true }
+        return lines.allSatisfy { line in
+            line.contains("codex app-server")
+                || line.contains("listening on:")
+                || line.contains("readyz:")
+                || line.contains("healthz:")
+                || line.contains("binds localhost only")
+        }
     }
 
     private func restartManagedServer(endpoint: URL? = nil) async {

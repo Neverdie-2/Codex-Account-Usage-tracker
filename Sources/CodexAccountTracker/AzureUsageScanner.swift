@@ -25,15 +25,15 @@ final class AzureUsageScanner {
         var result = AzureUsageScanResult(provider: provider)
         var state = AzureUsageScanState()
         var warnings = metadata.warnings
-        let fileURLs = jsonlFileURLs(since: startDate)
+        let fileURLs = jsonlFileURLs(since: startDate, shouldPruneDatedPaths: provider == .openai)
         result.summary.filesScanned = fileURLs.count
 
         if provider == .openai {
-            scanOpenAISessions(fileURLs: fileURLs, result: &result, state: &state)
+            scanOpenAISessions(fileURLs: fileURLs, eventCutoff: startDate, result: &result, state: &state)
         } else {
             for fileURL in fileURLs {
                 let rootURL = logRoots.first { fileURL.path.hasPrefix($0.path) }
-                scan(fileURL: fileURL, rootURL: rootURL, metadata: metadata, result: &result, state: &state)
+                scan(fileURL: fileURL, rootURL: rootURL, metadata: metadata, eventCutoff: startDate, result: &result, state: &state)
             }
         }
 
@@ -119,8 +119,96 @@ final class AzureUsageScanner {
             }
             return lhs.model.localizedCaseInsensitiveCompare(rhs.model) == .orderedAscending
         }
+        dashboard.byProject = projectGroups(from: records, provider: result.provider)
 
         return dashboard
+    }
+
+    private static func projectGroups(from records: [AzureUsageRecord], provider: CodexLogUsageProvider) -> [AzureUsageProjectGroup] {
+        Dictionary(grouping: records, by: projectGroupingKey(for:)).values.map { projectRecords in
+            let firstRecord = projectRecords[0]
+            let groupProjectPath = projectGroupingKey(for: firstRecord)
+            let groupProjectName = groupProjectPath == AzureUsageRecord.chatProject ? "Chats" : firstRecord.projectName
+            var totals = AzureUsageTokenTotals()
+            var sessionIDs = Set<String>()
+            var earliestActivity: Date?
+            var latestActivity: Date?
+            var modelGroups: [String: AzureUsageProjectModelGroup] = [:]
+            var sessionGroups: [String: AzureUsageProjectSessionAccumulator] = [:]
+
+            for record in projectRecords {
+                let pricing = AzureModelPricing.defaultPricing(for: record.model, provider: provider)
+                totals.add(record.usage, pricing: pricing)
+                sessionIDs.insert(record.sessionID)
+                earliestActivity = minDate(earliestActivity, record.timestamp)
+                latestActivity = maxDate(latestActivity, record.timestamp)
+
+                var modelGroup = modelGroups[record.model] ?? AzureUsageProjectModelGroup(
+                    model: record.model,
+                    pricing: pricing,
+                    totals: AzureUsageTokenTotals()
+                )
+                modelGroup.totals.add(record.usage, pricing: pricing)
+                modelGroups[record.model] = modelGroup
+
+                var sessionGroup = sessionGroups[record.sessionID] ?? AzureUsageProjectSessionAccumulator(
+                    sessionID: record.sessionID,
+                    filePath: record.filePath
+                )
+                sessionGroup.add(record, pricing: pricing)
+                sessionGroups[record.sessionID] = sessionGroup
+            }
+
+            return AzureUsageProjectGroup(
+                projectPath: groupProjectPath,
+                projectName: groupProjectName,
+                totals: totals,
+                sessionCount: sessionIDs.count,
+                earliestActivity: earliestActivity,
+                latestActivity: latestActivity,
+                byModel: modelGroups.values.sorted(by: sortProjectModels),
+                sessions: sessionGroups.values.map(\.group).sorted(by: sortProjectSessions)
+            )
+        }
+        .sorted { lhs, rhs in
+            if lhs.totals.totalTokens != rhs.totals.totalTokens {
+                return lhs.totals.totalTokens > rhs.totals.totalTokens
+            }
+            return lhs.projectPath.localizedCaseInsensitiveCompare(rhs.projectPath) == .orderedAscending
+        }
+    }
+
+    private static func projectGroupingKey(for record: AzureUsageRecord) -> String {
+        isCodexChatFolder(record.projectPath) ? AzureUsageRecord.chatProject : record.projectPath
+    }
+
+    private static func isCodexChatFolder(_ projectPath: String) -> Bool {
+        let components = URL(fileURLWithPath: projectPath).pathComponents
+        guard let documentsIndex = components.firstIndex(of: "Documents"),
+              documentsIndex + 2 < components.count,
+              components[documentsIndex + 1] == "Codex"
+        else {
+            return false
+        }
+
+        return dateOnlyFormatter.date(from: components[documentsIndex + 2]) != nil
+    }
+
+    private static func sortProjectModels(_ lhs: AzureUsageProjectModelGroup, _ rhs: AzureUsageProjectModelGroup) -> Bool {
+        if lhs.totals.totalTokens != rhs.totals.totalTokens {
+            return lhs.totals.totalTokens > rhs.totals.totalTokens
+        }
+        return lhs.model.localizedCaseInsensitiveCompare(rhs.model) == .orderedAscending
+    }
+
+    private static func sortProjectSessions(_ lhs: AzureUsageProjectSessionGroup, _ rhs: AzureUsageProjectSessionGroup) -> Bool {
+        if lhs.totals.totalTokens != rhs.totals.totalTokens {
+            return lhs.totals.totalTokens > rhs.totals.totalTokens
+        }
+        let lhsDate = lhs.latestActivity ?? .distantPast
+        let rhsDate = rhs.latestActivity ?? .distantPast
+        if lhsDate != rhsDate { return lhsDate > rhsDate }
+        return lhs.sessionID.localizedCaseInsensitiveCompare(rhs.sessionID) == .orderedAscending
     }
 
     static func defaultLogRoots() -> [URL] {
@@ -146,20 +234,28 @@ final class AzureUsageScanner {
         ]
     }
 
-    private func jsonlFileURLs(since startDate: Date? = nil) -> [URL] {
+    private func jsonlFileURLs(since startDate: Date? = nil, shouldPruneDatedPaths: Bool = true) -> [URL] {
         var urls: [URL] = []
 
         for root in logRoots where fileManager.fileExists(atPath: root.path) {
             guard let enumerator = fileManager.enumerator(
                 at: root,
-                includingPropertiesForKeys: [.isRegularFileKey],
+                includingPropertiesForKeys: [.isDirectoryKey, .isRegularFileKey],
                 options: [.skipsHiddenFiles]
             ) else {
                 continue
             }
 
-            for case let url as URL in enumerator where url.pathExtension == "jsonl" {
-                if let startDate, shouldSkip(url: url, before: startDate) {
+            for case let url as URL in enumerator {
+                if shouldPruneDatedPaths,
+                   let startDate,
+                   isDatedDirectory(url, before: startDate) {
+                    enumerator.skipDescendants()
+                    continue
+                }
+
+                guard url.pathExtension == "jsonl" else { continue }
+                if let startDate, shouldSkip(url: url, before: startDate, shouldPruneDatedPaths: shouldPruneDatedPaths) {
                     continue
                 }
                 urls.append(url)
@@ -169,8 +265,19 @@ final class AzureUsageScanner {
         return urls.sorted { $0.path.localizedCaseInsensitiveCompare($1.path) == .orderedAscending }
     }
 
-    private func shouldSkip(url: URL, before startDate: Date) -> Bool {
-        if let pathDate = Self.dateFromPath(url), Calendar.current.startOfDay(for: pathDate) < Calendar.current.startOfDay(for: startDate) {
+    private func isDatedDirectory(_ url: URL, before startDate: Date) -> Bool {
+        guard let values = try? url.resourceValues(forKeys: [.isDirectoryKey]),
+              values.isDirectory == true,
+              let pathDate = Self.dateFromPath(url)
+        else { return false }
+
+        return Calendar.current.startOfDay(for: pathDate) < Calendar.current.startOfDay(for: startDate)
+    }
+
+    private func shouldSkip(url: URL, before startDate: Date, shouldPruneDatedPaths: Bool) -> Bool {
+        if shouldPruneDatedPaths,
+           let pathDate = Self.dateFromPath(url),
+           Calendar.current.startOfDay(for: pathDate) < Calendar.current.startOfDay(for: startDate) {
             return true
         }
 
@@ -215,13 +322,14 @@ final class AzureUsageScanner {
         fileURL: URL,
         rootURL: URL?,
         metadata: AzureUsageDetectedMetadata,
+        eventCutoff: Date?,
         result: inout AzureUsageScanResult,
         state: inout AzureUsageScanState
     ) {
-        scanAzureFile(fileURL: fileURL, rootURL: rootURL, metadata: metadata, result: &result)
+        scanAzureFile(fileURL: fileURL, rootURL: rootURL, metadata: metadata, eventCutoff: eventCutoff, result: &result)
     }
 
-    private func scanAzureFile(fileURL: URL, rootURL: URL?, metadata: AzureUsageDetectedMetadata, result: inout AzureUsageScanResult) {
+    private func scanAzureFile(fileURL: URL, rootURL: URL?, metadata: AzureUsageDetectedMetadata, eventCutoff: Date?, result: inout AzureUsageScanResult) {
         guard let lineReader = LineReader(url: fileURL) else {
             return
         }
@@ -230,6 +338,7 @@ final class AzureUsageScanner {
         var isTargetProviderSession = false
         var didCountProviderSession = false
         var currentModel: String?
+        var projectPath = AzureUsageRecord.unknownProject
         var seenCumulativeUsages = Set<AzureTokenUsage>()
         var eventIndex = 0
         result.summary.sessionsScanned += 1
@@ -246,6 +355,7 @@ final class AzureUsageScanner {
                 if !isTargetProviderSession {
                     break
                 }
+                projectPath = Self.extractProjectPath(from: line)
                 continue
             }
 
@@ -281,6 +391,9 @@ final class AzureUsageScanner {
             }
 
             eventIndex += 1
+            if let eventCutoff, timestamp <= eventCutoff {
+                continue
+            }
             if !didCountProviderSession {
                 result.summary.providerSessions += 1
                 didCountProviderSession = true
@@ -294,6 +407,7 @@ final class AzureUsageScanner {
                 metadata: metadata,
                 model: model,
                 usage: lastUsage,
+                projectPath: projectPath,
                 result: &result
             )
         }
@@ -301,6 +415,7 @@ final class AzureUsageScanner {
 
     private func scanOpenAISessions(
         fileURLs: [URL],
+        eventCutoff: Date?,
         result: inout AzureUsageScanResult,
         state: inout AzureUsageScanState
     ) {
@@ -322,7 +437,7 @@ final class AzureUsageScanner {
         result.summary.sessionsScanned = sessions.count
         result.summary.providerSessions = sessions.count
         for session in sessions {
-            processOpenAISession(session, result: &result, state: &state)
+            processOpenAISession(session, eventCutoff: eventCutoff, result: &result, state: &state)
         }
     }
 
@@ -335,6 +450,7 @@ final class AzureUsageScanner {
         var sessionID = fileSessionID
         var metaTimestamp: Date?
         var forkedFromID: String?
+        var projectPath = AzureUsageRecord.unknownProject
         var isTargetProviderSession = false
         var currentModel: String?
         var parsedEvents: [AzureUsageParsedTokenEvent] = []
@@ -354,6 +470,7 @@ final class AzureUsageScanner {
                 }
                 metaTimestamp = Self.date(from: Self.extractStringValue(named: "timestamp", from: line))
                 forkedFromID = Self.extractStringValue(named: "forked_from_id", from: line)
+                projectPath = Self.extractProjectPath(from: line)
                 continue
             }
 
@@ -391,17 +508,26 @@ final class AzureUsageScanner {
             sessionID: sessionID,
             metaTimestamp: metaTimestamp,
             forkedFromID: forkedFromID,
+            projectPath: projectPath,
             events: parsedEvents
         )
     }
 
     private func processOpenAISession(
         _ session: AzureUsageParsedSession,
+        eventCutoff: Date?,
         result: inout AzureUsageScanResult,
         state: inout AzureUsageScanState
     ) {
         let replayCutoff = startupReplayCutoff(for: session)
         for event in session.events {
+            if let eventCutoff, event.timestamp <= eventCutoff {
+                if let totalUsage = event.totalUsage {
+                    state.openAIDedupeKeys.insert("\(session.sessionID)|\(totalUsage.signature)")
+                }
+                continue
+            }
+
             if let replayCutoff, event.timestamp <= replayCutoff {
                 result.summary.startupReplayEventsSkipped += 1
                 continue
@@ -423,6 +549,7 @@ final class AzureUsageScanner {
                 metadata: AzureUsageDetectedMetadata(endpoint: "OpenAI", resource: "Codex local logs", deployment: nil, warnings: []),
                 model: event.model,
                 usage: event.lastUsage,
+                projectPath: session.projectPath,
                 result: &result
             )
         }
@@ -450,6 +577,7 @@ final class AzureUsageScanner {
         metadata: AzureUsageDetectedMetadata,
         model: String,
         usage: AzureTokenUsage,
+        projectPath: String,
         result: inout AzureUsageScanResult
     ) {
         let endpoint = provider == .azure ? (metadata.endpoint ?? Self.unknownEndpoint) : "OpenAI"
@@ -464,6 +592,7 @@ final class AzureUsageScanner {
             resource: resource,
             deployment: deployment,
             model: model,
+            projectPath: projectPath,
             usage: usage
         )
         result.records.append(record)
@@ -501,6 +630,15 @@ final class AzureUsageScanner {
     private static func extractModel(from line: String) -> String? {
         extractStringValue(named: "model", from: line)
             ?? extractStringValue(named: "model_name", from: line)
+    }
+
+    private static func extractProjectPath(from line: String) -> String {
+        if let payload = jsonObject(from: line)?["payload"] as? [String: Any],
+           let cwd = payload["cwd"] as? String {
+            return AzureUsageRecord.normalizedProjectPath(cwd)
+        }
+
+        return AzureUsageRecord.normalizedProjectPath(extractStringValue(named: "cwd", from: line))
     }
 
     private static func displayName(forSessionProvider provider: String?) -> String {
@@ -688,6 +826,13 @@ final class AzureUsageScanner {
         return formatter
     }()
 
+    private static let dateOnlyFormatter: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.dateFormat = "yyyy-MM-dd"
+        return formatter
+    }()
+
     static let unknownEndpoint = "unknown endpoint"
     static let unknownResource = "unknown resource"
     static let unknownDeployment = "unknown deployment"
@@ -697,6 +842,33 @@ final class AzureUsageScanner {
     private static let tokenCountBytes = Array("\"token_count\"".utf8)
 }
 
+
+private struct AzureUsageProjectSessionAccumulator {
+    var sessionID: String
+    var filePath: String
+    var models = Set<String>()
+    var totals = AzureUsageTokenTotals()
+    var earliestActivity: Date?
+    var latestActivity: Date?
+
+    mutating func add(_ record: AzureUsageRecord, pricing: AzureModelPricing) {
+        models.insert(record.model)
+        totals.add(record.usage, pricing: pricing)
+        earliestActivity = earliestActivity.map { min($0, record.timestamp) } ?? record.timestamp
+        latestActivity = latestActivity.map { max($0, record.timestamp) } ?? record.timestamp
+    }
+
+    var group: AzureUsageProjectSessionGroup {
+        AzureUsageProjectSessionGroup(
+            sessionID: sessionID,
+            filePath: filePath,
+            models: models.sorted { $0.localizedCaseInsensitiveCompare($1) == .orderedAscending },
+            totals: totals,
+            earliestActivity: earliestActivity,
+            latestActivity: latestActivity
+        )
+    }
+}
 
 private struct AzureUsageScanState {
     var openAIDedupeKeys = Set<String>()
@@ -708,6 +880,7 @@ private struct AzureUsageParsedSession {
     var sessionID: String
     var metaTimestamp: Date?
     var forkedFromID: String?
+    var projectPath: String
     var events: [AzureUsageParsedTokenEvent]
 }
 

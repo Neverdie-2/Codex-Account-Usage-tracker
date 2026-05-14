@@ -28,7 +28,7 @@ Each saved account card shows:
 
 ## Azure Usage Dashboard
 
-The Azure Usage and OpenAI Codex Usage sections are separate from the ChatGPT/Codex account quota cards. They scan local Codex JSONL logs and recompute token usage without changing the saved account tracker data. Full scan results are cached locally after each scan so the app can reopen with the last known dashboard immediately and only rescan when you click refresh/scan.
+The Azure Usage and OpenAI Codex Usage sections are separate from the ChatGPT/Codex account quota cards. They scan local Codex JSONL logs and recompute token usage without changing the saved account tracker data. Full results are cached locally after each refresh so the app can reopen with the last known dashboard immediately. Refreshes are incremental: after cached usage exists, the app scans only from the latest known token event through now, then merges new events into the cached result.
 
 Log paths scanned:
 
@@ -42,14 +42,17 @@ Counting rules:
 - A session is included in Azure Usage only when a `session_meta` record has `payload.model_provider == "azure"`.
 - A session is included in OpenAI Codex Usage only when `session_meta.payload.model_provider == "openai"` and `session_meta.payload.originator == "Codex Desktop"`.
 - The active model/deployment is read from preceding `turn_context` records with `payload.model`.
+- Project attribution is read from `session_meta.payload.cwd`; blank or missing values are grouped as `unknown project`.
 - Token usage is counted only from `event_msg` records where `payload.type == "token_count"`.
 - Only `payload.info.last_token_usage` is summed.
 - Azure de-dupes repeated `payload.info.total_token_usage` cumulative signatures within a session.
-- OpenAI Codex de-dupes repeated cumulative signatures by `(session_meta.payload.id, total_token_usage_signature)`, processes sessions by `session_meta.timestamp`, and skips fork startup replay bursts.
+- OpenAI Codex de-dupes repeated cumulative signatures by `(session_meta.payload.id, total_token_usage_signature)`, processes sessions by `session_meta.timestamp`, and skips fork startup replay bursts before project totals are aggregated.
 - Malformed, missing, or negative usage records are skipped.
 - Events before a model is known are grouped under `unknown`.
 
-Token totals include input tokens, cached input tokens, uncached input tokens, output tokens, reasoning output tokens, total tokens, and event count. Full cached scan results are filtered in memory for all time, last 24 hours, last 7 days, or usage since a custom date. The cache files live in `~/Library/Application Support/CodexAccountTracker/` and store token usage summaries/records only, not secrets.
+Token totals include input tokens, cached input tokens, uncached input tokens, output tokens, reasoning output tokens, total tokens, and event count. Full cached results are filtered in memory for all time, last 24 hours, last 7 days, or usage since a custom date. The cache files live in `~/Library/Application Support/CodexAccountTracker/` and store token usage summaries/records only, not secrets. Older cache files that predate project fields still load, with project shown as `unknown project` until the next refresh persists `cwd` metadata.
+
+The dashboards include a local “By project” drilldown. Project totals, model rows, and session rows are derived only from the already-counted, provider-filtered, de-duped scan records; the app does not recount raw logs separately for project grouping. The project label uses the last path component of `session_meta.payload.cwd` and shows the full recorded working directory as secondary text. Treat project grouping as a local-log estimate that follows the session's recorded working directory.
 
 The dashboards also show estimated USD cost by model and in total. Cost estimates use built-in per-1M-token pricing presets when the local deployment/model name can be recognized. Current presets include GPT-5.5, GPT-5.5 pro, GPT-5.4, GPT-5.4 mini, and a GPT-5 fallback for OpenAI Codex-style model names. For `gpt-55` / GPT-5.5, the default estimate uses $5.00 per 1M uncached input tokens, $0.50 per 1M cached input tokens, and $30.00 per 1M output tokens. Reasoning output tokens are included in output token totals and are not billed as a separate line item by this local estimate. Unknown model pricing is shown as $0 until a pricing preset is added.
 

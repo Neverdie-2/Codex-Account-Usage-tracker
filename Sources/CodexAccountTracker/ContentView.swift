@@ -44,6 +44,7 @@ struct ContentView: View {
                 .background(Color(nsColor: .windowBackgroundColor))
             }
         }
+        .textSelection(.enabled)
         .onReceive(NotificationCenter.default.publisher(for: NSApplication.willTerminateNotification)) { _ in
             viewModel.shutdown()
         }
@@ -77,40 +78,28 @@ private struct HeaderView: View {
                 )
             }
 
-            if viewModel.isSharedServerRunning {
-                Button {
-                    viewModel.stopOwnServer()
-                } label: {
-                    Label("Stop Shared Server", systemImage: "stop.circle")
-                }
-            } else {
-                Button {
-                    viewModel.startSharedServerAndRefresh()
-                } label: {
-                    Label("Start Shared Server", systemImage: "play.circle")
-                }
-            }
-
             if viewModel.isPrivateServerRunning {
                 Button {
                     viewModel.stopOwnServer()
                 } label: {
-                    Label("Stop Own Server", systemImage: "stop.circle")
+                    Label("Stop Server", systemImage: "stop.circle")
                 }
+                .headerButtonSizing()
             } else {
                 Button {
                     viewModel.startOwnServerAndRefresh()
                 } label: {
                     Label("Start Own Server", systemImage: "play.circle")
                 }
+                .headerButtonSizing()
             }
 
             Button {
                 viewModel.refreshNow()
             } label: {
-                Label(viewModel.isRefreshing ? "Refreshing" : "Refresh", systemImage: "arrow.clockwise")
+                Label("Refresh", systemImage: "arrow.clockwise")
             }
-            .disabled(viewModel.isRefreshing)
+            .headerButtonSizing()
         }
         .padding(20)
         .background(.bar)
@@ -137,6 +126,17 @@ private struct HeaderView: View {
         }
     }
 }
+
+private extension View {
+    func headerButtonSizing() -> some View {
+        self
+            .font(.system(size: 13))
+            .labelStyle(.titleAndIcon)
+            .lineLimit(1)
+            .controlSize(.regular)
+    }
+}
+
 
 private struct EmptyStateView: View {
     @EnvironmentObject private var viewModel: AccountTrackerViewModel
@@ -192,10 +192,10 @@ private struct AccountCardView: View {
             HStack(alignment: .firstTextBaseline) {
                 VStack(alignment: .leading, spacing: 5) {
                     Text(account.email)
-                        .font(.headline)
+                        .font(.system(size: 14.5, weight: .semibold))
                         .textSelection(.enabled)
                     Text("Last seen \(account.lastSeenAt)")
-                        .font(.caption)
+                        .font(.system(size: 12.5))
                         .foregroundStyle(.secondary)
                         .textSelection(.enabled)
                 }
@@ -210,6 +210,7 @@ private struct AccountCardView: View {
                     isConfirmingDelete = true
                 } label: {
                     Image(systemName: "trash")
+                        .font(.system(size: 15.5))
                 }
                 .buttonStyle(.borderless)
                 .foregroundStyle(.red)
@@ -244,6 +245,7 @@ private struct AccountCardView: View {
             }
         }
         .padding(16)
+        .textSelection(.enabled)
         .background(Color(nsColor: .controlBackgroundColor))
         .clipShape(RoundedRectangle(cornerRadius: 8))
         .overlay {
@@ -487,11 +489,12 @@ private struct QuotaPanel: View {
                     .foregroundStyle(.secondary)
             }
 
-            ProgressView(value: Double(usedPercent ?? 0), total: 100)
-                .tint(quotaColor)
+            FixedColorProgressBar(value: Double(usedPercent ?? 0), total: 100, color: quotaColor)
 
             LabeledContent("Used", value: percentText(usedPercent))
+                .font(.system(size: 14.5))
             LabeledContent("Reset", value: resetText)
+                .font(.system(size: 14.5))
         }
         .font(.callout)
         .padding(12)
@@ -503,7 +506,7 @@ private struct QuotaPanel: View {
     private var quotaColor: Color {
         guard let remainingPercent else { return .secondary }
         if remainingPercent <= 10 { return .red }
-        if remainingPercent <= 25 { return .orange }
+        if remainingPercent <= 25 { return Color(red: 0.95, green: 0.72, blue: 0.16) }
         return .green
     }
 
@@ -517,6 +520,32 @@ private struct QuotaPanel: View {
     private func percentText(_ value: Int?) -> String {
         guard let value else { return "--%" }
         return "\(value)%"
+    }
+}
+
+private struct FixedColorProgressBar: View {
+    let value: Double
+    let total: Double
+    let color: Color
+
+    private var fraction: Double {
+        guard total > 0 else { return 0 }
+        return min(max(value / total, 0), 1)
+    }
+
+    var body: some View {
+        GeometryReader { proxy in
+            ZStack(alignment: .leading) {
+                Capsule()
+                    .fill(Color(nsColor: .separatorColor).opacity(0.45))
+                Capsule()
+                    .fill(color)
+                    .frame(width: max(0, proxy.size.width * fraction))
+            }
+        }
+        .frame(height: 5)
+        .accessibilityLabel("Used quota")
+        .accessibilityValue("\(Int((fraction * 100).rounded()))%")
     }
 }
 
@@ -556,9 +585,10 @@ private struct OpenAIUsageSectionView: View {
             isRefreshing: viewModel.isOpenAIRefreshing,
             lastScannedAt: viewModel.openAILastScannedAt,
             scanMode: $viewModel.openAIUsageScanMode,
+            customStartDate: $viewModel.openAICustomStartDate,
             sessionCounterLabel: CodexLogUsageProvider.openai.sessionCounterLabel,
             endpointTableTitle: "By provider / model deployment",
-            emptyText: "No OpenAI Codex token events counted yet. Choose a window and click Scan.",
+            emptyText: "No OpenAI Codex token events counted yet. Choose a window and click Refresh.",
             endpointLabel: { group in
                 "\(group.endpoint) • \(group.deployment)"
             },
@@ -571,11 +601,11 @@ private struct OpenAIUsageSectionView: View {
             }
         )
         .confirmationDialog(
-            "Scan all OpenAI Codex history?",
+            "Refresh all OpenAI Codex history?",
             isPresented: $isConfirmingAllTimeScan,
             titleVisibility: .visible
         ) {
-            Button("Scan all history") {
+            Button("Refresh all history") {
                 viewModel.refreshOpenAIUsage()
             }
             Button("Cancel", role: .cancel) {}
@@ -636,6 +666,7 @@ private struct CodexLogUsageSectionView: View {
         isRefreshing: Bool,
         lastScannedAt: Date?,
         scanMode: Binding<CodexUsageScanMode>,
+        customStartDate: Binding<Date>,
         sessionCounterLabel: String,
         endpointTableTitle: String,
         emptyText: String,
@@ -648,7 +679,7 @@ private struct CodexLogUsageSectionView: View {
         self.isRefreshing = isRefreshing
         self.lastScannedAt = lastScannedAt
         self.window = nil
-        self.customStartDate = nil
+        self.customStartDate = customStartDate
         self.scanMode = scanMode
         self.sessionCounterLabel = sessionCounterLabel
         self.endpointTableTitle = endpointTableTitle
@@ -677,7 +708,8 @@ private struct CodexLogUsageSectionView: View {
                         }
                     }
                     .labelsHidden()
-                    .frame(width: 150)
+                    .controlSize(.large)
+                    .frame(width: 167)
                 }
 
                 if let scanMode {
@@ -687,10 +719,11 @@ private struct CodexLogUsageSectionView: View {
                         }
                     }
                     .labelsHidden()
-                    .frame(width: 150)
+                    .controlSize(.large)
+                    .frame(width: 167)
                 }
 
-                if window?.wrappedValue == .sinceDate, let customStartDate {
+                if (window?.wrappedValue == .sinceDate || scanMode?.wrappedValue == .sinceDate), let customStartDate {
                     DatePicker(
                         "Since",
                         selection: customStartDate,
@@ -698,14 +731,16 @@ private struct CodexLogUsageSectionView: View {
                     )
                     .datePickerStyle(.compact)
                     .labelsHidden()
-                    .frame(width: 120)
+                    .controlSize(.large)
+                    .frame(width: 133)
                 }
 
                 Button {
                     refresh()
                 } label: {
-                    Label(isRefreshing ? "Scanning" : "Rescan", systemImage: "arrow.clockwise")
+                    Label(isRefreshing ? "Refreshing" : "Refresh", systemImage: "arrow.clockwise")
                 }
+                .controlSize(.large)
                 .disabled(isRefreshing)
             }
 
@@ -736,6 +771,14 @@ private struct CodexLogUsageSectionView: View {
                 )
             }
 
+            AzureUsageProjectTableView(
+                projects: dashboard.byProject,
+                emptyText: emptyText
+            )
+
+            Divider()
+                .padding(.horizontal, 8)
+
             AzureUsageScanStatsView(
                 dashboard: dashboard,
                 lastScannedAt: lastScannedAt,
@@ -746,7 +789,7 @@ private struct CodexLogUsageSectionView: View {
                 VStack(alignment: .leading, spacing: 6) {
                     ForEach(dashboard.summary.warnings, id: \.self) { warning in
                         Label(warning, systemImage: "exclamationmark.triangle")
-                            .font(.caption)
+                            .font(AzureUsageLowerFont.hiddenCaption)
                             .foregroundStyle(.secondary)
                             .textSelection(.enabled)
                     }
@@ -772,11 +815,13 @@ private struct AzureUsageTotalPanel: View {
             Text(title)
                 .font(.caption.weight(.semibold))
                 .foregroundStyle(.secondary)
-            Text(value.formatted())
+                .textSelection(.enabled)
+            Text(AzureUsageFormat.integer(value))
                 .font(.system(size: 22, weight: .semibold, design: .rounded))
                 .monospacedDigit()
                 .lineLimit(1)
                 .minimumScaleFactor(0.75)
+                .textSelection(.enabled)
         }
         .padding(12)
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -794,16 +839,60 @@ private struct AzureUsageCostPanel: View {
             Text(title)
                 .font(.caption.weight(.semibold))
                 .foregroundStyle(.secondary)
-            Text(value.formatted(.currency(code: "USD").precision(.fractionLength(2))))
+                .textSelection(.enabled)
+            Text(AzureUsageFormat.usd(value))
                 .font(.system(size: 22, weight: .semibold, design: .rounded))
                 .monospacedDigit()
                 .lineLimit(1)
                 .minimumScaleFactor(0.75)
+                .textSelection(.enabled)
         }
         .padding(12)
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(Color(nsColor: .textBackgroundColor))
         .clipShape(RoundedRectangle(cornerRadius: 8))
+    }
+}
+
+private enum AzureUsageLowerFont {
+    static let empty = Font.system(size: 14)
+    static let tableTitle = Font.system(size: 15, weight: .semibold)
+    static let caption = Font.system(size: 14)
+    static let captionSemibold = Font.system(size: 14, weight: .semibold)
+    static let captionMonospaced = Font.system(size: 14)
+    static let captionMonospacedSemibold = Font.system(size: 14, weight: .semibold)
+    static let caption2 = Font.system(size: 13)
+    static let hiddenCaption = Font.system(size: 14)
+    static let hiddenCaptionSemibold = Font.system(size: 14, weight: .semibold)
+    static let hiddenCaptionMonospaced = Font.system(size: 14)
+    static let hiddenCaption2 = Font.system(size: 13)
+}
+
+private enum AzureUsageColumnWidth {
+    static let events: CGFloat = 64
+    static let tokens: CGFloat = 92
+    static let output: CGFloat = 82
+    static let total: CGFloat = 100
+    static let cost: CGFloat = 88
+    static let sessions: CGFloat = 66
+    static let projectEvents: CGFloat = 58
+    static let projectTotal: CGFloat = 104
+    static let projectCost: CGFloat = 86
+    static let latest: CGFloat = 188
+}
+
+private enum AzureUsageFormat {
+    static func integer(_ value: Int) -> String {
+        value.formatted(.number.locale(Locale(identifier: "en_US")))
+    }
+
+    static func usd(_ value: Double) -> String {
+        let formatter = NumberFormatter()
+        formatter.numberStyle = .currency
+        formatter.currencySymbol = "$"
+        formatter.minimumFractionDigits = 2
+        formatter.maximumFractionDigits = 2
+        return formatter.string(from: NSNumber(value: value)) ?? "$\(String(format: "%.2f", value))"
     }
 }
 
@@ -828,11 +917,11 @@ private struct AzureUsageTableView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
             Text(title)
-                .font(.subheadline.weight(.semibold))
+                .font(AzureUsageLowerFont.tableTitle)
 
             if groups.isEmpty {
                 Text(emptyText)
-                    .font(.caption)
+                    .font(AzureUsageLowerFont.empty)
                     .foregroundStyle(.secondary)
                     .frame(maxWidth: .infinity, minHeight: 72, alignment: .center)
             } else {
@@ -860,17 +949,17 @@ private struct AzureUsageHeaderRow: View {
             Text("Name")
                 .frame(maxWidth: .infinity, alignment: .leading)
             Text("Events")
-                .frame(width: 54, alignment: .trailing)
+                .frame(width: AzureUsageColumnWidth.events, alignment: .trailing)
             Text("Input")
-                .frame(width: 74, alignment: .trailing)
+                .frame(width: AzureUsageColumnWidth.tokens, alignment: .trailing)
             Text("Output")
-                .frame(width: 74, alignment: .trailing)
+                .frame(width: AzureUsageColumnWidth.output, alignment: .trailing)
             Text("Total")
-                .frame(width: 82, alignment: .trailing)
+                .frame(width: AzureUsageColumnWidth.total, alignment: .trailing)
             Text("Est. $")
-                .frame(width: 72, alignment: .trailing)
+                .frame(width: AzureUsageColumnWidth.cost, alignment: .trailing)
         }
-        .font(.caption.weight(.semibold))
+        .font(AzureUsageLowerFont.captionSemibold)
         .foregroundStyle(.secondary)
         .padding(.vertical, 5)
     }
@@ -883,23 +972,370 @@ private struct AzureUsageRow: View {
     var body: some View {
         HStack(spacing: 8) {
             Text(title)
-                .font(.caption)
+                .font(AzureUsageLowerFont.caption)
                 .lineLimit(2)
                 .textSelection(.enabled)
                 .frame(maxWidth: .infinity, alignment: .leading)
-            Text(totals.eventCount.formatted())
-                .frame(width: 54, alignment: .trailing)
-            Text(totals.inputTokens.formatted())
-                .frame(width: 74, alignment: .trailing)
-            Text(totals.outputTokens.formatted())
-                .frame(width: 74, alignment: .trailing)
-            Text(totals.totalTokens.formatted())
-                .frame(width: 82, alignment: .trailing)
-            Text(totals.estimatedCostUSD.formatted(.currency(code: "USD").precision(.fractionLength(2))))
-                .frame(width: 72, alignment: .trailing)
+            Text(AzureUsageFormat.integer(totals.eventCount))
+                .monospacedDigit()
+                .lineLimit(1)
+                .textSelection(.enabled)
+                .frame(width: AzureUsageColumnWidth.events, alignment: .trailing)
+            Text(AzureUsageFormat.integer(totals.inputTokens))
+                .monospacedDigit()
+                .lineLimit(1)
+                .textSelection(.enabled)
+                .frame(width: AzureUsageColumnWidth.tokens, alignment: .trailing)
+            Text(AzureUsageFormat.integer(totals.outputTokens))
+                .monospacedDigit()
+                .lineLimit(1)
+                .textSelection(.enabled)
+                .frame(width: AzureUsageColumnWidth.output, alignment: .trailing)
+            Text(AzureUsageFormat.integer(totals.totalTokens))
+                .monospacedDigit()
+                .lineLimit(1)
+                .textSelection(.enabled)
+                .frame(width: AzureUsageColumnWidth.total, alignment: .trailing)
+            Text(AzureUsageFormat.usd(totals.estimatedCostUSD))
+                .monospacedDigit()
+                .lineLimit(1)
+                .textSelection(.enabled)
+                .frame(width: AzureUsageColumnWidth.cost, alignment: .trailing)
         }
-        .font(.caption.monospacedDigit())
+        .font(AzureUsageLowerFont.captionMonospaced)
         .padding(.vertical, 6)
+    }
+}
+
+private struct AzureUsageProjectTableView: View {
+    let projects: [AzureUsageProjectGroup]
+    let emptyText: String
+
+    private var folderProjects: [AzureUsageProjectGroup] {
+        projects.filter { !$0.isChatGroup }
+    }
+
+    private var chatGroups: [AzureUsageProjectGroup] {
+        projects.filter(\.isChatGroup)
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            let hasChats = !chatGroups.isEmpty
+
+            VStack(alignment: .leading, spacing: 0) {
+                AzureUsageProjectGroupSectionView(
+                    title: "By project",
+                    firstColumnTitle: "Project",
+                    projects: folderProjects,
+                    emptyText: emptyText,
+                    showsFooterDivider: hasChats
+                )
+
+                if hasChats {
+                    AzureUsageProjectRowsView(
+                        projects: chatGroups,
+                        emptyText: emptyText,
+                        showsTrailingDivider: false
+                    )
+                }
+            }
+            .background(Color(nsColor: .textBackgroundColor))
+            .clipShape(RoundedRectangle(cornerRadius: 8))
+        }
+    }
+}
+
+private struct AzureUsageProjectGroupSectionView: View {
+    let title: String
+    let firstColumnTitle: String
+    let projects: [AzureUsageProjectGroup]
+    let emptyText: String
+    var showsFooterDivider = false
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text(title)
+                .font(AzureUsageLowerFont.tableTitle)
+
+            if projects.isEmpty {
+                Text(emptyText)
+                    .font(AzureUsageLowerFont.empty)
+                    .foregroundStyle(.secondary)
+                    .frame(maxWidth: .infinity, minHeight: 72, alignment: .center)
+            } else {
+                VStack(spacing: 0) {
+                    AzureUsageProjectHeaderRow(firstColumnTitle: firstColumnTitle)
+                    ForEach(projects.prefix(12)) { project in
+                        if project.id == projects.prefix(12).first?.id {
+                            Divider()
+                        }
+                        AzureUsageProjectDisclosureRow(project: project)
+                        Divider()
+                    }
+                }
+            }
+        }
+        .padding(.top, 12)
+        .padding(.horizontal, 12)
+        .frame(maxWidth: .infinity, alignment: .topLeading)
+    }
+}
+
+private struct AzureUsageProjectRowsView: View {
+    let projects: [AzureUsageProjectGroup]
+    let emptyText: String
+    var showsTrailingDivider = true
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            if projects.isEmpty {
+                Text(emptyText)
+                    .font(AzureUsageLowerFont.empty)
+                    .foregroundStyle(.secondary)
+                    .frame(maxWidth: .infinity, minHeight: 72, alignment: .center)
+            } else {
+                VStack(spacing: 0) {
+                    ForEach(projects.prefix(12)) { project in
+                        AzureUsageProjectDisclosureRow(project: project)
+                        if showsTrailingDivider || project.id != projects.prefix(12).last?.id {
+                            Divider()
+                        }
+                    }
+                }
+            }
+        }
+        .padding(.horizontal, 12)
+        .frame(maxWidth: .infinity, alignment: .topLeading)
+    }
+}
+
+private struct AzureUsageProjectHeaderRow: View {
+    let firstColumnTitle: String
+
+    var body: some View {
+        HStack(spacing: 8) {
+            Spacer(minLength: 0)
+                .frame(maxWidth: .infinity, alignment: .leading)
+            Text("Sessions")
+                .frame(width: AzureUsageColumnWidth.sessions, alignment: .trailing)
+            Text("Events")
+                .frame(width: AzureUsageColumnWidth.projectEvents, alignment: .trailing)
+            Text("Total")
+                .frame(width: AzureUsageColumnWidth.projectTotal, alignment: .trailing)
+            Text("Est. $")
+                .frame(width: AzureUsageColumnWidth.projectCost, alignment: .trailing)
+            Text("Latest")
+                .frame(width: AzureUsageColumnWidth.latest, alignment: .trailing)
+        }
+        .font(AzureUsageLowerFont.captionSemibold)
+        .foregroundStyle(.secondary)
+        .padding(.vertical, 5)
+    }
+}
+
+private struct AzureUsageProjectDisclosureRow: View {
+    let project: AzureUsageProjectGroup
+    @State private var isExpanded = false
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            projectRow
+
+            if isExpanded {
+                expandedContent
+                    .padding(.leading, 18)
+                    .padding(.bottom, 8)
+            }
+        }
+    }
+
+    private var expandedContent: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Divider()
+            AzureUsageProjectBreakdownView(title: "Models", rows: project.byModel.prefix(8).map { row in
+                AzureUsageProjectBreakdownRow(
+                    name: "\(row.model) • \(row.pricing.rateSummary)",
+                    totals: row.totals,
+                    detail: nil
+                )
+            })
+
+            Divider()
+            AzureUsageProjectSessionTableView(sessions: Array(project.sessions.prefix(12)))
+        }
+    }
+
+    private var projectRow: some View {
+        HStack(spacing: 8) {
+            Image(systemName: "chevron.right")
+                .font(.system(size: 12, weight: .semibold))
+                .rotationEffect(.degrees(isExpanded ? 90 : 0))
+                .frame(width: 12, alignment: .center)
+                .foregroundStyle(.primary)
+                .onTapGesture {
+                    isExpanded.toggle()
+                }
+
+            Button {
+                isExpanded.toggle()
+            } label: {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(project.isChatGroup ? "Chats" : project.projectName)
+                        .font(AzureUsageLowerFont.captionSemibold)
+                        .lineLimit(1)
+                    if project.isChatGroup {
+                        EmptyView()
+                    } else {
+                        Text(project.projectPath)
+                            .font(AzureUsageLowerFont.caption2)
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
+                    }
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .contentShape(Rectangle())
+            }
+            .contextMenu {
+                Button("Copy name") {
+                    copyToPasteboard(project.isChatGroup ? "Chats" : project.projectName)
+                }
+                if !project.isChatGroup {
+                    Button("Copy path") {
+                        copyToPasteboard(project.projectPath)
+                    }
+                }
+            }
+            .buttonStyle(.plain)
+            .frame(maxWidth: .infinity, alignment: .leading)
+
+            Text(AzureUsageFormat.integer(project.sessionCount))
+                .monospacedDigit()
+                .lineLimit(1)
+                .textSelection(.enabled)
+                .frame(width: AzureUsageColumnWidth.sessions, alignment: .trailing)
+            Text(AzureUsageFormat.integer(project.totals.eventCount))
+                .monospacedDigit()
+                .lineLimit(1)
+                .textSelection(.enabled)
+                .frame(width: AzureUsageColumnWidth.projectEvents, alignment: .trailing)
+            Text(AzureUsageFormat.integer(project.totals.totalTokens))
+                .monospacedDigit()
+                .lineLimit(1)
+                .textSelection(.enabled)
+                .frame(width: AzureUsageColumnWidth.projectTotal, alignment: .trailing)
+            Text(AzureUsageFormat.usd(project.totals.estimatedCostUSD))
+                .monospacedDigit()
+                .lineLimit(1)
+                .textSelection(.enabled)
+                .frame(width: AzureUsageColumnWidth.projectCost, alignment: .trailing)
+            Text(DateFormats.display(date: project.latestActivity))
+                .lineLimit(1)
+                .textSelection(.enabled)
+                .frame(width: AzureUsageColumnWidth.latest, alignment: .trailing)
+        }
+        .font(AzureUsageLowerFont.captionMonospaced)
+        .padding(.vertical, 6)
+    }
+
+    private func copyToPasteboard(_ text: String) {
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(text, forType: .string)
+    }
+}
+
+private struct AzureUsageProjectBreakdownView: View {
+    let title: String
+    let rows: [AzureUsageProjectBreakdownRow]
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text(title)
+                .font(AzureUsageLowerFont.hiddenCaptionSemibold)
+                .foregroundStyle(.secondary)
+            ForEach(rows) { row in
+                HStack(spacing: 8) {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(row.name)
+                            .lineLimit(1)
+                            .textSelection(.enabled)
+                        if let detail = row.detail {
+                            Text(detail)
+                                .font(AzureUsageLowerFont.hiddenCaption2)
+                                .foregroundStyle(.secondary)
+                                .lineLimit(1)
+                                .textSelection(.enabled)
+                        }
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    Text(AzureUsageFormat.integer(row.totals.eventCount))
+                        .monospacedDigit()
+                        .lineLimit(1)
+                        .frame(width: AzureUsageColumnWidth.projectEvents, alignment: .trailing)
+                    Text(AzureUsageFormat.integer(row.totals.totalTokens))
+                        .monospacedDigit()
+                        .lineLimit(1)
+                        .frame(width: AzureUsageColumnWidth.projectTotal, alignment: .trailing)
+                    Text(AzureUsageFormat.usd(row.totals.estimatedCostUSD))
+                        .monospacedDigit()
+                        .lineLimit(1)
+                        .frame(width: AzureUsageColumnWidth.projectCost, alignment: .trailing)
+                }
+                .font(AzureUsageLowerFont.hiddenCaptionMonospaced)
+                .padding(.vertical, 3)
+            }
+        }
+    }
+}
+
+private struct AzureUsageProjectBreakdownRow: Identifiable {
+    let id = UUID()
+    let name: String
+    let totals: AzureUsageTokenTotals
+    let detail: String?
+}
+
+private struct AzureUsageProjectSessionTableView: View {
+    let sessions: [AzureUsageProjectSessionGroup]
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text("Sessions")
+                .font(AzureUsageLowerFont.hiddenCaptionSemibold)
+                .foregroundStyle(.secondary)
+
+            ForEach(sessions) { session in
+                HStack(spacing: 8) {
+                    Text(session.shortSessionID)
+                        .frame(width: 72, alignment: .leading)
+                        .textSelection(.enabled)
+                    Text(session.modelSummary)
+                        .lineLimit(1)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                    Text(AzureUsageFormat.integer(session.totals.eventCount))
+                        .monospacedDigit()
+                        .lineLimit(1)
+                        .frame(width: AzureUsageColumnWidth.projectEvents, alignment: .trailing)
+                    Text(AzureUsageFormat.integer(session.totals.totalTokens))
+                        .monospacedDigit()
+                        .lineLimit(1)
+                        .frame(width: AzureUsageColumnWidth.projectTotal, alignment: .trailing)
+                    Text(AzureUsageFormat.usd(session.totals.estimatedCostUSD))
+                        .monospacedDigit()
+                        .lineLimit(1)
+                        .frame(width: AzureUsageColumnWidth.projectCost, alignment: .trailing)
+                    Text(DateFormats.display(date: session.latestActivity))
+                        .lineLimit(1)
+                        .frame(width: AzureUsageColumnWidth.latest, alignment: .trailing)
+                    Text(session.sourceFileName)
+                        .lineLimit(1)
+                        .frame(width: 140, alignment: .trailing)
+                        .textSelection(.enabled)
+                }
+                .font(AzureUsageLowerFont.hiddenCaptionMonospaced)
+                .padding(.vertical, 3)
+            }
+        }
     }
 }
 
@@ -909,16 +1345,16 @@ private struct AzureUsageScanStatsView: View {
     let sessionCounterLabel: String
 
     var body: some View {
-        LazyVGrid(columns: [GridItem(.adaptive(minimum: 170), spacing: 10)], alignment: .leading, spacing: 8) {
+        LazyVGrid(columns: [GridItem(.adaptive(minimum: 230), spacing: 18)], alignment: .leading, spacing: 10) {
             AzureUsageStat(label: "Earliest event", value: DateFormats.display(date: dashboard.summary.earliestEvent))
             AzureUsageStat(label: "Latest event", value: DateFormats.display(date: dashboard.summary.latestEvent))
-            AzureUsageStat(label: "Files scanned", value: dashboard.summary.filesScanned.formatted())
-            AzureUsageStat(label: "Sessions scanned", value: dashboard.summary.sessionsScanned.formatted())
-            AzureUsageStat(label: sessionCounterLabel, value: dashboard.summary.azureSessions.formatted())
-            AzureUsageStat(label: "Events counted", value: dashboard.summary.eventsCounted.formatted())
-            AzureUsageStat(label: "Duplicates skipped", value: dashboard.summary.duplicateEventsSkipped.formatted())
-            AzureUsageStat(label: "Startup replay skipped", value: dashboard.summary.startupReplayEventsSkipped.formatted())
-            AzureUsageStat(label: "Malformed skipped", value: dashboard.summary.malformedEventsSkipped.formatted())
+            AzureUsageStat(label: "Files scanned", value: AzureUsageFormat.integer(dashboard.summary.filesScanned))
+            AzureUsageStat(label: "Sessions scanned", value: AzureUsageFormat.integer(dashboard.summary.sessionsScanned))
+            AzureUsageStat(label: sessionCounterLabel, value: AzureUsageFormat.integer(dashboard.summary.azureSessions))
+            AzureUsageStat(label: "Events counted", value: AzureUsageFormat.integer(dashboard.summary.eventsCounted))
+            AzureUsageStat(label: "Duplicates skipped", value: AzureUsageFormat.integer(dashboard.summary.duplicateEventsSkipped))
+            AzureUsageStat(label: "Startup replay skipped", value: AzureUsageFormat.integer(dashboard.summary.startupReplayEventsSkipped))
+            AzureUsageStat(label: "Malformed skipped", value: AzureUsageFormat.integer(dashboard.summary.malformedEventsSkipped))
             AzureUsageStat(label: "Last scanned", value: DateFormats.display(date: lastScannedAt))
         }
     }
@@ -929,8 +1365,18 @@ private struct AzureUsageStat: View {
     let value: String
 
     var body: some View {
-        LabeledContent(label, value: value)
-            .font(.caption)
+        HStack(alignment: .firstTextBaseline, spacing: 8) {
+            Text(label)
+                .font(AzureUsageLowerFont.captionSemibold)
+                .foregroundStyle(.primary)
+                .fixedSize(horizontal: true, vertical: false)
+            Text(value)
+                .font(AzureUsageLowerFont.caption)
+                .foregroundStyle(.primary)
+                .lineLimit(2)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+            .font(AzureUsageLowerFont.caption)
             .textSelection(.enabled)
     }
 }
@@ -940,7 +1386,7 @@ private struct StatusPill: View {
 
     var body: some View {
         Text(text)
-            .font(.caption.weight(.semibold))
+            .font(.system(size: 12.5, weight: .semibold))
             .padding(.horizontal, 9)
             .padding(.vertical, 5)
             .background(Color.accentColor.opacity(0.13))
@@ -954,7 +1400,7 @@ private struct PlanPill: View {
 
     var body: some View {
         Text(text.uppercased())
-            .font(.caption.weight(.semibold))
+            .font(.system(size: 12.5, weight: .semibold))
             .padding(.horizontal, 9)
             .padding(.vertical, 5)
             .background(Color(nsColor: .textBackgroundColor))
