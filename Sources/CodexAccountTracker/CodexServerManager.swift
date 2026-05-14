@@ -25,9 +25,7 @@ final class CodexServerManager {
         process.arguments = [
             "app-server",
             "--listen",
-            endpoint.absoluteString,
-            "--session-source",
-            "codex-account-tracker"
+            endpoint.absoluteString
         ]
         process.environment = launchEnvironment()
 
@@ -109,7 +107,7 @@ final class CodexServerManager {
         pkill.arguments = [
             "-TERM",
             "-f",
-            "app-server --listen \(endpoint.absoluteString) --session-source codex-account-tracker"
+            "app-server --listen \(endpoint.absoluteString)"
         ]
         do {
             try pkill.run()
