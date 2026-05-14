@@ -1,6 +1,6 @@
 import Foundation
 
-enum AzureUsageTimeWindow: String, CaseIterable, Identifiable {
+enum AzureUsageTimeWindow: String, CaseIterable, Identifiable, Codable {
     case last24Hours
     case last7Days
     case sinceDate
@@ -35,7 +35,7 @@ enum AzureUsageTimeWindow: String, CaseIterable, Identifiable {
     }
 }
 
-enum CodexLogUsageProvider: String, Equatable {
+enum CodexLogUsageProvider: String, Equatable, Codable {
     case azure
     case openai
 
@@ -63,7 +63,7 @@ enum CodexLogUsageProvider: String, Equatable {
     }
 }
 
-enum CodexUsageScanMode: String, CaseIterable, Identifiable {
+enum CodexUsageScanMode: String, CaseIterable, Identifiable, Codable {
     case recent24Hours
     case recent7Days
     case allTime
@@ -92,9 +92,17 @@ enum CodexUsageScanMode: String, CaseIterable, Identifiable {
     var requiresConfirmation: Bool {
         self == .allTime
     }
+
+    var usageWindow: AzureUsageTimeWindow {
+        switch self {
+        case .recent24Hours: return .last24Hours
+        case .recent7Days: return .last7Days
+        case .allTime: return .allTime
+        }
+    }
 }
 
-struct AzureUsageTokenTotals: Equatable {
+struct AzureUsageTokenTotals: Equatable, Codable {
     var inputTokens = 0
     var cachedInputTokens = 0
     var uncachedInputTokens = 0
@@ -124,7 +132,7 @@ struct AzureUsageTokenTotals: Equatable {
     }
 }
 
-struct AzureModelPricing: Equatable {
+struct AzureModelPricing: Equatable, Codable {
     var modelPattern: String
     var displayName: String
     var inputPerMillionUSD: Double
@@ -241,7 +249,7 @@ struct AzureModelPricing: Equatable {
     }
 }
 
-struct AzureTokenUsage: Equatable, Hashable {
+struct AzureTokenUsage: Equatable, Hashable, Codable {
     var inputTokens: Int
     var cachedInputTokens: Int
     var outputTokens: Int
@@ -261,7 +269,7 @@ struct AzureTokenUsage: Equatable, Hashable {
     }
 }
 
-struct AzureUsageRecord: Equatable, Identifiable {
+struct AzureUsageRecord: Equatable, Identifiable, Codable {
     var id: String
     var sessionID: String
     var filePath: String
@@ -273,7 +281,7 @@ struct AzureUsageRecord: Equatable, Identifiable {
     var usage: AzureTokenUsage
 }
 
-struct AzureUsageGroup: Equatable, Identifiable {
+struct AzureUsageGroup: Equatable, Identifiable, Codable {
     var id: String { key }
     var key: String
     var endpoint: String
@@ -284,7 +292,7 @@ struct AzureUsageGroup: Equatable, Identifiable {
     var totals: AzureUsageTokenTotals
 }
 
-struct AzureUsageScanSummary: Equatable {
+struct AzureUsageScanSummary: Equatable, Codable {
     var filesScanned = 0
     var sessionsScanned = 0
     var providerSessions = 0
@@ -302,7 +310,7 @@ struct AzureUsageScanSummary: Equatable {
     }
 }
 
-struct AzureUsageScanResult: Equatable {
+struct AzureUsageScanResult: Equatable, Codable {
     var provider: CodexLogUsageProvider = .azure
     var records: [AzureUsageRecord] = []
     var summary = AzureUsageScanSummary()
@@ -310,7 +318,7 @@ struct AzureUsageScanResult: Equatable {
     static let empty = AzureUsageScanResult()
 }
 
-struct AzureUsageDashboard: Equatable {
+struct AzureUsageDashboard: Equatable, Codable {
     var totals = AzureUsageTokenTotals()
     var byEndpointDeployment: [AzureUsageGroup] = []
     var byModel: [AzureUsageGroup] = []

@@ -17,16 +17,20 @@ final class AccountTrackerViewModel: ObservableObject {
     @Published private(set) var isOpenAIRefreshing = false
     @Published private(set) var azureLastScannedAt: Date?
     @Published private(set) var openAILastScannedAt: Date?
-    @Published var openAIUsageScanMode: CodexUsageScanMode = .recent24Hours
+    @Published var openAIUsageScanMode: CodexUsageScanMode = .recent24Hours {
+        didSet {
+            rebuildOpenAIUsageDashboard()
+        }
+    }
     @Published var azureUsageWindow: AzureUsageTimeWindow = .last7Days {
         didSet {
-            refreshAzureUsage()
+            rebuildAzureUsageDashboard()
         }
     }
     @Published var azureCustomStartDate: Date = Calendar.current.date(byAdding: .day, value: -7, to: Date()) ?? Date() {
         didSet {
             if azureUsageWindow == .sinceDate {
-                refreshAzureUsage()
+                rebuildAzureUsageDashboard()
             }
         }
     }
@@ -43,6 +47,7 @@ final class AccountTrackerViewModel: ObservableObject {
     let refreshIntervalSeconds: TimeInterval = 30
 
     private let store = AccountStore()
+    private let usageCacheStore = AzureUsageCacheStore()
     private let azureScanner = AzureUsageScanner()
     private let openAIUsageScanner = AzureUsageScanner(provider: .openai, logRoots: AzureUsageScanner.defaultLogRoots())
     private let server = CodexServerManager()
@@ -93,7 +98,7 @@ final class AccountTrackerViewModel: ObservableObject {
             }
         }
         statusText = accounts.isEmpty ? "Idle" : "Saved"
-        refreshAzureUsage()
+        loadUsageCaches()
         await startLiveMonitoring()
     }
 
@@ -106,17 +111,18 @@ final class AccountTrackerViewModel: ObservableObject {
     func refreshAzureUsage() {
         guard !isAzureRefreshing else { return }
         isAzureRefreshing = true
-        let scanStartDate = azureUsageWindow.startDate(now: Date(), customStartDate: azureCustomStartDate)
 
-        Task { [weak self, azureScanner] in
+        Task { [weak self, azureScanner, usageCacheStore] in
             let result = await Task.detached(priority: .utility) {
-                azureScanner.scan(since: scanStartDate)
+                azureScanner.scan()
             }.value
 
             guard let self else { return }
             defer { isAzureRefreshing = false }
+            let scannedAt = Date()
             azureScanResult = result
-            azureLastScannedAt = Date()
+            azureLastScannedAt = scannedAt
+            usageCacheStore.save(result, scannedAt: scannedAt)
             rebuildAzureUsageDashboard()
         }
     }
@@ -124,17 +130,18 @@ final class AccountTrackerViewModel: ObservableObject {
     func refreshOpenAIUsage() {
         guard !isOpenAIRefreshing else { return }
         isOpenAIRefreshing = true
-        let scanStartDate = openAIUsageScanMode.startDate(now: Date())
 
-        Task { [weak self, openAIUsageScanner] in
+        Task { [weak self, openAIUsageScanner, usageCacheStore] in
             let result = await Task.detached(priority: .utility) {
-                openAIUsageScanner.scan(since: scanStartDate)
+                openAIUsageScanner.scan()
             }.value
 
             guard let self else { return }
             defer { isOpenAIRefreshing = false }
+            let scannedAt = Date()
             openAIScanResult = result
-            openAILastScannedAt = Date()
+            openAILastScannedAt = scannedAt
+            usageCacheStore.save(result, scannedAt: scannedAt)
             rebuildOpenAIUsageDashboard()
         }
     }
@@ -201,6 +208,20 @@ final class AccountTrackerViewModel: ObservableObject {
         }
     }
 
+    private func loadUsageCaches() {
+        if let azureCache = usageCacheStore.load(provider: .azure) {
+            azureScanResult = azureCache.result
+            azureLastScannedAt = azureCache.scannedAt
+            rebuildAzureUsageDashboard()
+        }
+
+        if let openAICache = usageCacheStore.load(provider: .openai) {
+            openAIScanResult = openAICache.result
+            openAILastScannedAt = openAICache.scannedAt
+            rebuildOpenAIUsageDashboard()
+        }
+    }
+
     private func rebuildAzureUsageDashboard() {
         azureUsage = AzureUsageScanner.dashboard(
             from: azureScanResult,
@@ -213,7 +234,7 @@ final class AccountTrackerViewModel: ObservableObject {
     private func rebuildOpenAIUsageDashboard() {
         openAIUsage = AzureUsageScanner.dashboard(
             from: openAIScanResult,
-            window: .allTime,
+            window: openAIUsageScanMode.usageWindow,
             customStartDate: Date(timeIntervalSince1970: 0),
             now: displayNow
         )
