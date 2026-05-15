@@ -13,12 +13,15 @@ final class AccountTrackerViewModel: ObservableObject {
     @Published private(set) var displayNow = Date()
     @Published private(set) var azureUsage = AzureUsageDashboard.empty
     @Published private(set) var openAIUsage = AzureUsageDashboard.empty
+    @Published private(set) var claudeCodeUsage = AzureUsageDashboard.empty
     @Published private(set) var openAIAPIBilling = OpenAIAPIBillingDashboard.empty
     @Published private(set) var isAzureRefreshing = false
     @Published private(set) var isOpenAIRefreshing = false
+    @Published private(set) var isClaudeCodeRefreshing = false
     @Published private(set) var isOpenAIAPIBillingRefreshing = false
     @Published private(set) var azureLastScannedAt: Date?
     @Published private(set) var openAILastScannedAt: Date?
+    @Published private(set) var claudeCodeLastScannedAt: Date?
     @Published private(set) var openAIAPIBillingLastScannedAt: Date?
     @Published var openAIAdminKey: String {
         didSet {
@@ -47,6 +50,18 @@ final class AccountTrackerViewModel: ObservableObject {
         didSet {
             if openAIUsageScanMode == .sinceDate {
                 rebuildOpenAIUsageDashboard()
+            }
+        }
+    }
+    @Published var claudeCodeUsageScanMode: CodexUsageScanMode = .recent24Hours {
+        didSet {
+            rebuildClaudeCodeUsageDashboard()
+        }
+    }
+    @Published var claudeCodeCustomStartDate: Date = Calendar.current.date(byAdding: .day, value: -7, to: Date()) ?? Date() {
+        didSet {
+            if claudeCodeUsageScanMode == .sinceDate {
+                rebuildClaudeCodeUsageDashboard()
             }
         }
     }
@@ -80,10 +95,15 @@ final class AccountTrackerViewModel: ObservableObject {
     private let openAIAPIBillingClient = OpenAIAPIBillingClient()
     private let azureScanner = AzureUsageScanner()
     private let openAIUsageScanner = AzureUsageScanner(provider: .openai, logRoots: AzureUsageScanner.defaultLogRoots())
+    private let claudeCodeUsageScanner = AzureUsageScanner(
+        provider: .claudeCode,
+        logRoots: AzureUsageScanner.defaultClaudeCodeLogRoots()
+    )
     private let server = CodexServerManager()
     private var client: CodexRPCClient?
     private var azureScanResult = AzureUsageScanResult.empty
     private var openAIScanResult = AzureUsageScanResult(provider: .openai)
+    private var claudeCodeScanResult = AzureUsageScanResult(provider: .claudeCode)
     private var openAIAPIBillingResult = OpenAIAPIBillingResult.empty
     private var refreshTask: Task<Void, Never>?
     private var displayClockTask: Task<Void, Never>?
@@ -140,6 +160,15 @@ final class AccountTrackerViewModel: ObservableObject {
             windowLabel: openAIUsageScanMode.label,
             lastScannedAt: openAILastScannedAt,
             sessionCounterLabel: CodexLogUsageProvider.openai.sessionCounterLabel,
+            to: &lines
+        )
+        lines.append("")
+        appendUsageDashboard(
+            claudeCodeUsage,
+            title: "Claude Code Usage",
+            windowLabel: claudeCodeUsageScanMode.label,
+            lastScannedAt: claudeCodeLastScannedAt,
+            sessionCounterLabel: CodexLogUsageProvider.claudeCode.sessionCounterLabel,
             to: &lines
         )
         lines.append("")
@@ -232,6 +261,32 @@ final class AccountTrackerViewModel: ObservableObject {
             openAILastScannedAt = scannedAt
             usageCacheStore.save(openAIScanResult, scannedAt: scannedAt)
             rebuildOpenAIUsageDashboard()
+        }
+    }
+
+    func refreshClaudeCodeUsage() {
+        guard !isClaudeCodeRefreshing else { return }
+        isClaudeCodeRefreshing = true
+        let previousResult = claudeCodeScanResult
+        let startDate = Self.openAIUsageRefreshStartDate(
+            previousResult: previousResult,
+            scanMode: claudeCodeUsageScanMode,
+            now: displayNow,
+            customStartDate: claudeCodeCustomStartDate
+        )
+
+        Task { [weak self, claudeCodeUsageScanner, usageCacheStore] in
+            let result = await Task.detached(priority: .utility) {
+                claudeCodeUsageScanner.scan(since: startDate)
+            }.value
+
+            guard let self else { return }
+            defer { isClaudeCodeRefreshing = false }
+            let scannedAt = Date()
+            claudeCodeScanResult = Self.mergedUsageResult(previousResult, with: result)
+            claudeCodeLastScannedAt = scannedAt
+            usageCacheStore.save(claudeCodeScanResult, scannedAt: scannedAt)
+            rebuildClaudeCodeUsageDashboard()
         }
     }
 
@@ -328,6 +383,12 @@ final class AccountTrackerViewModel: ObservableObject {
             openAIScanResult = openAICache.result
             openAILastScannedAt = openAICache.scannedAt
             rebuildOpenAIUsageDashboard()
+        }
+
+        if let claudeCache = usageCacheStore.load(provider: .claudeCode) {
+            claudeCodeScanResult = claudeCache.result
+            claudeCodeLastScannedAt = claudeCache.scannedAt
+            rebuildClaudeCodeUsageDashboard()
         }
 
         if let apiBillingCache = openAIAPIBillingCacheStore.load() {
@@ -506,6 +567,15 @@ final class AccountTrackerViewModel: ObservableObject {
             from: openAIScanResult,
             window: openAIUsageScanMode.usageWindow,
             customStartDate: openAICustomStartDate,
+            now: displayNow
+        )
+    }
+
+    private func rebuildClaudeCodeUsageDashboard() {
+        claudeCodeUsage = AzureUsageScanner.dashboard(
+            from: claudeCodeScanResult,
+            window: claudeCodeUsageScanMode.usageWindow,
+            customStartDate: claudeCodeCustomStartDate,
             now: displayNow
         )
     }

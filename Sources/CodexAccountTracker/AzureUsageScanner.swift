@@ -19,18 +19,27 @@ final class AzureUsageScanner {
     }
 
     func scan(since startDate: Date? = nil) -> AzureUsageScanResult {
-        let metadata = provider == .azure
-            ? AzureUsageMetadataDetector(fileManager: fileManager, urls: metadataURLs).detect()
-            : AzureUsageDetectedMetadata(endpoint: "OpenAI", resource: "Codex local logs", deployment: nil, warnings: [])
+        let metadata: AzureUsageDetectedMetadata
+        switch provider {
+        case .azure:
+            metadata = AzureUsageMetadataDetector(fileManager: fileManager, urls: metadataURLs).detect()
+        case .openai:
+            metadata = AzureUsageDetectedMetadata(endpoint: "OpenAI", resource: "Codex local logs", deployment: nil, warnings: [])
+        case .claudeCode:
+            metadata = AzureUsageDetectedMetadata(endpoint: "Anthropic", resource: "Claude Code transcripts", deployment: nil, warnings: [])
+        }
         var result = AzureUsageScanResult(provider: provider)
         var state = AzureUsageScanState()
         var warnings = metadata.warnings
         let fileURLs = jsonlFileURLs(since: startDate)
         result.summary.filesScanned = fileURLs.count
 
-        if provider == .openai {
+        switch provider {
+        case .openai:
             scanOpenAISessions(fileURLs: fileURLs, eventCutoff: startDate, result: &result, state: &state)
-        } else {
+        case .claudeCode:
+            scanClaudeCodeSessions(fileURLs: fileURLs, eventCutoff: startDate, result: &result, state: &state)
+        case .azure:
             for fileURL in fileURLs {
                 let rootURL = logRoots.first { fileURL.path.hasPrefix($0.path) }
                 scan(fileURL: fileURL, rootURL: rootURL, metadata: metadata, eventCutoff: startDate, result: &result, state: &state)
@@ -38,7 +47,10 @@ final class AzureUsageScanner {
         }
 
         if result.records.contains(where: { $0.endpoint == AzureUsageScanner.unknownEndpoint }) {
-            warnings.append(provider.unknownEndpointWarning)
+            let warning = provider.unknownEndpointWarning
+            if !warning.isEmpty {
+                warnings.append(warning)
+            }
         }
         if result.records.contains(where: { $0.model == AzureUsageScanner.unknownModel }) {
             warnings.append("Some \(provider.displayName) token events had no preceding turn_context model and are grouped as unknown model.")
@@ -216,6 +228,13 @@ final class AzureUsageScanner {
         return [
             home.appendingPathComponent(".codex/sessions", isDirectory: true),
             home.appendingPathComponent(".codex/archived_sessions", isDirectory: true)
+        ]
+    }
+
+    static func defaultClaudeCodeLogRoots() -> [URL] {
+        let home = FileManager.default.homeDirectoryForCurrentUser
+        return [
+            home.appendingPathComponent(".claude/projects", isDirectory: true)
         ]
     }
 
@@ -582,6 +601,109 @@ final class AzureUsageScanner {
         return burstEvents.map(\.timestamp).max()
     }
 
+    private func scanClaudeCodeSessions(
+        fileURLs: [URL],
+        eventCutoff: Date?,
+        result: inout AzureUsageScanResult,
+        state: inout AzureUsageScanState
+    ) {
+        let metadata = AzureUsageDetectedMetadata(
+            endpoint: "Anthropic",
+            resource: "Claude Code transcripts",
+            deployment: nil,
+            warnings: []
+        )
+
+        for fileURL in fileURLs {
+            let sessionID = fileURL.deletingPathExtension().lastPathComponent
+            var sawAssistantLine = false
+            var didCountProviderSession = false
+
+            guard let lineReader = LineReader(url: fileURL) else { continue }
+            result.summary.sessionsScanned += 1
+            var eventIndex = 0
+
+            while let lineData = lineReader.nextLineData() {
+                guard !lineData.isEmpty else { continue }
+                guard lineData.containsASCII(Self.assistantTypeBytes) else { continue }
+
+                guard let object = try? JSONSerialization.jsonObject(with: lineData) as? [String: Any],
+                      (object["type"] as? String) == "assistant",
+                      let message = object["message"] as? [String: Any],
+                      let usageDict = message["usage"] as? [String: Any]
+                else { continue }
+
+                sawAssistantLine = true
+
+                guard let messageID = message["id"] as? String, !messageID.isEmpty else {
+                    result.summary.malformedEventsSkipped += 1
+                    continue
+                }
+
+                guard let timestamp = Self.date(from: object["timestamp"]) else {
+                    result.summary.malformedEventsSkipped += 1
+                    continue
+                }
+
+                let model = (object["model"] as? String)
+                    ?? (message["model"] as? String)
+                    ?? Self.unknownModel
+                if model == "<synthetic>" { continue }
+                let cwd = object["cwd"] as? String
+
+                let usage = Self.claudeCodeTokenUsage(from: usageDict)
+                if usage.isZero { continue }
+
+                if !state.claudeCodeMessageKeys.insert(messageID).inserted {
+                    result.summary.duplicateEventsSkipped += 1
+                    continue
+                }
+
+                eventIndex += 1
+                if let eventCutoff, timestamp <= eventCutoff {
+                    continue
+                }
+
+                if !didCountProviderSession {
+                    result.summary.providerSessions += 1
+                    didCountProviderSession = true
+                }
+
+                appendRecord(
+                    sessionID: sessionID,
+                    recordID: "\(sessionID)-\(eventIndex)",
+                    fileURL: fileURL,
+                    timestamp: timestamp,
+                    metadata: metadata,
+                    model: model,
+                    usage: usage,
+                    projectPath: AzureUsageRecord.normalizedProjectPath(cwd),
+                    result: &result
+                )
+            }
+
+            if !sawAssistantLine {
+                result.summary.sessionsScanned -= 1
+            }
+        }
+    }
+
+    private static func claudeCodeTokenUsage(from usage: [String: Any]) -> AzureTokenUsage {
+        let input = intValue(usage["input_tokens"]) ?? 0
+        let cacheCreation = intValue(usage["cache_creation_input_tokens"]) ?? 0
+        let cacheRead = intValue(usage["cache_read_input_tokens"]) ?? 0
+        let output = intValue(usage["output_tokens"]) ?? 0
+        let totalInput = input + cacheCreation + cacheRead
+        return AzureTokenUsage(
+            inputTokens: totalInput,
+            cachedInputTokens: cacheRead,
+            cacheCreationInputTokens: cacheCreation,
+            outputTokens: output,
+            reasoningOutputTokens: 0,
+            totalTokens: totalInput + output
+        )
+    }
+
     private func appendRecord(
         sessionID: String,
         recordID: String,
@@ -593,8 +715,19 @@ final class AzureUsageScanner {
         projectPath: String,
         result: inout AzureUsageScanResult
     ) {
-        let endpoint = provider == .azure ? (metadata.endpoint ?? Self.unknownEndpoint) : "OpenAI"
-        let resource = provider == .azure ? (metadata.resource ?? Self.unknownResource) : "Codex local logs"
+        let endpoint: String
+        let resource: String
+        switch provider {
+        case .azure:
+            endpoint = metadata.endpoint ?? Self.unknownEndpoint
+            resource = metadata.resource ?? Self.unknownResource
+        case .openai:
+            endpoint = "OpenAI"
+            resource = "Codex local logs"
+        case .claudeCode:
+            endpoint = metadata.endpoint ?? "Anthropic"
+            resource = metadata.resource ?? "Claude Code transcripts"
+        }
         let deployment = model == Self.unknownModel ? (metadata.deployment ?? Self.unknownDeployment) : model
         let record = AzureUsageRecord(
             id: recordID,
@@ -853,6 +986,7 @@ final class AzureUsageScanner {
     private static let sessionMetaBytes = Array("\"session_meta\"".utf8)
     private static let turnContextBytes = Array("\"turn_context\"".utf8)
     private static let tokenCountBytes = Array("\"token_count\"".utf8)
+    private static let assistantTypeBytes = Array("\"type\":\"assistant\"".utf8)
 }
 
 
@@ -885,6 +1019,7 @@ private struct AzureUsageProjectSessionAccumulator {
 
 private struct AzureUsageScanState {
     var openAIDedupeKeys = Set<String>()
+    var claudeCodeMessageKeys = Set<String>()
 }
 
 private struct AzureUsageParsedSession {

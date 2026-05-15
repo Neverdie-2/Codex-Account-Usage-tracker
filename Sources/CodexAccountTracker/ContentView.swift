@@ -15,6 +15,7 @@ struct ContentView: View {
                             .frame(minHeight: 300)
                         AzureUsageSectionView()
                         OpenAIUsageSectionView()
+                        ClaudeCodeUsageSectionView()
                     }
                     .padding(20)
                 }
@@ -38,6 +39,7 @@ struct ContentView: View {
 
                         AzureUsageSectionView()
                         OpenAIUsageSectionView()
+                        ClaudeCodeUsageSectionView()
                     }
                     .padding(20)
                 }
@@ -596,6 +598,29 @@ private struct OpenAIUsageSectionView: View {
     }
 }
 
+private struct ClaudeCodeUsageSectionView: View {
+    @EnvironmentObject private var viewModel: AccountTrackerViewModel
+
+    var body: some View {
+        CodexLogUsageSectionView(
+            title: "Claude Code Usage",
+            subtitle: "Manual scan of ~/.claude/projects transcripts (cache write tracked separately)",
+            dashboard: viewModel.claudeCodeUsage,
+            isRefreshing: viewModel.isClaudeCodeRefreshing,
+            lastScannedAt: viewModel.claudeCodeLastScannedAt,
+            scanMode: $viewModel.claudeCodeUsageScanMode,
+            customStartDate: $viewModel.claudeCodeCustomStartDate,
+            sessionCounterLabel: CodexLogUsageProvider.claudeCode.sessionCounterLabel,
+            endpointTableTitle: "By provider / model",
+            emptyText: "No Claude Code token events counted yet. Choose a window and click Refresh.",
+            endpointLabel: { group in
+                "\(group.endpoint) • \(group.deployment)"
+            },
+            refresh: viewModel.refreshClaudeCodeUsage
+        )
+    }
+}
+
 private struct CodexLogUsageSectionView: View {
     let title: String
     let subtitle: String
@@ -728,6 +753,9 @@ private struct CodexLogUsageSectionView: View {
             HStack(spacing: 12) {
                 AzureUsageTotalPanel(title: "Input", value: dashboard.totals.inputTokens)
                 AzureUsageTotalPanel(title: "Cached", value: dashboard.totals.cachedInputTokens)
+                if dashboard.totals.cacheCreationInputTokens > 0 {
+                    AzureUsageTotalPanel(title: "Cache write", value: dashboard.totals.cacheCreationInputTokens)
+                }
                 AzureUsageTotalPanel(title: "Uncached", value: dashboard.totals.uncachedInputTokens)
                 AzureUsageTotalPanel(title: "Output", value: dashboard.totals.outputTokens)
                 AzureUsageTotalPanel(title: "Total", value: dashboard.totals.totalTokens)

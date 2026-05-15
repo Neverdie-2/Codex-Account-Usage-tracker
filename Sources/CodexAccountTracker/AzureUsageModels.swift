@@ -53,11 +53,13 @@ enum AzureUsageTimeWindow: String, CaseIterable, Identifiable, Codable {
 enum CodexLogUsageProvider: String, Equatable, Codable {
     case azure
     case openai
+    case claudeCode = "claude-code"
 
     var displayName: String {
         switch self {
         case .azure: return "Azure"
         case .openai: return "Codex"
+        case .claudeCode: return "Claude Code"
         }
     }
 
@@ -65,6 +67,7 @@ enum CodexLogUsageProvider: String, Equatable, Codable {
         switch self {
         case .azure: return "Azure sessions"
         case .openai: return "Codex sessions"
+        case .claudeCode: return "Claude Code sessions"
         }
     }
 
@@ -74,6 +77,8 @@ enum CodexLogUsageProvider: String, Equatable, Codable {
             return "Azure endpoint/resource could not be reliably discovered from local logs or safe config metadata; grouped as unknown endpoint."
         case .openai:
             return "OpenAI Codex usage excludes Azure sessions; Azure usage remains in the separate Azure dashboard."
+        case .claudeCode:
+            return ""
         }
     }
 }
@@ -140,6 +145,7 @@ enum CodexUsageScanMode: String, CaseIterable, Identifiable, Codable {
 struct AzureUsageTokenTotals: Equatable, Codable {
     var inputTokens = 0
     var cachedInputTokens = 0
+    var cacheCreationInputTokens = 0
     var uncachedInputTokens = 0
     var outputTokens = 0
     var reasoningOutputTokens = 0
@@ -158,6 +164,7 @@ struct AzureUsageTokenTotals: Equatable, Codable {
     mutating func add(_ usage: AzureTokenUsage, pricing: AzureModelPricing) {
         inputTokens += usage.inputTokens
         cachedInputTokens += usage.cachedInputTokens
+        cacheCreationInputTokens += usage.cacheCreationInputTokens
         uncachedInputTokens += usage.uncachedInputTokens
         outputTokens += usage.outputTokens
         reasoningOutputTokens += usage.reasoningOutputTokens
@@ -165,6 +172,21 @@ struct AzureUsageTokenTotals: Equatable, Codable {
         eventCount += 1
         estimatedCostUSD += pricing.estimatedCost(for: usage)
     }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        inputTokens = try container.decodeIfPresent(Int.self, forKey: .inputTokens) ?? 0
+        cachedInputTokens = try container.decodeIfPresent(Int.self, forKey: .cachedInputTokens) ?? 0
+        cacheCreationInputTokens = try container.decodeIfPresent(Int.self, forKey: .cacheCreationInputTokens) ?? 0
+        uncachedInputTokens = try container.decodeIfPresent(Int.self, forKey: .uncachedInputTokens) ?? 0
+        outputTokens = try container.decodeIfPresent(Int.self, forKey: .outputTokens) ?? 0
+        reasoningOutputTokens = try container.decodeIfPresent(Int.self, forKey: .reasoningOutputTokens) ?? 0
+        totalTokens = try container.decodeIfPresent(Int.self, forKey: .totalTokens) ?? 0
+        eventCount = try container.decodeIfPresent(Int.self, forKey: .eventCount) ?? 0
+        estimatedCostUSD = try container.decodeIfPresent(Double.self, forKey: .estimatedCostUSD) ?? 0
+    }
+
+    init() {}
 }
 
 struct AzureModelPricing: Equatable, Codable {
@@ -172,22 +194,126 @@ struct AzureModelPricing: Equatable, Codable {
     var displayName: String
     var inputPerMillionUSD: Double
     var cachedInputPerMillionUSD: Double
+    var cacheWritePerMillionUSD: Double?
     var outputPerMillionUSD: Double
     var isKnown: Bool
 
+    var effectiveCacheWritePerMillionUSD: Double {
+        cacheWritePerMillionUSD ?? inputPerMillionUSD
+    }
+
     func estimatedCost(for usage: AzureTokenUsage) -> Double {
         let uncachedCost = Double(usage.uncachedInputTokens) / 1_000_000 * inputPerMillionUSD
+        let cacheWriteCost = Double(usage.cacheCreationInputTokens) / 1_000_000 * effectiveCacheWritePerMillionUSD
         let cachedCost = Double(usage.cachedInputTokens) / 1_000_000 * cachedInputPerMillionUSD
         let outputCost = Double(usage.outputTokens) / 1_000_000 * outputPerMillionUSD
-        return uncachedCost + cachedCost + outputCost
+        return uncachedCost + cacheWriteCost + cachedCost + outputCost
     }
 
     var rateSummary: String {
         guard isKnown else { return "pricing unknown" }
-        return "in \(Self.usd(inputPerMillionUSD))/M · cached \(Self.usd(cachedInputPerMillionUSD))/M · out \(Self.usd(outputPerMillionUSD))/M"
+        var parts: [String] = ["in \(Self.usd(inputPerMillionUSD))/M"]
+        if let cacheWritePerMillionUSD, cacheWritePerMillionUSD != inputPerMillionUSD {
+            parts.append("write \(Self.usd(cacheWritePerMillionUSD))/M")
+        }
+        parts.append("cached \(Self.usd(cachedInputPerMillionUSD))/M")
+        parts.append("out \(Self.usd(outputPerMillionUSD))/M")
+        return parts.joined(separator: " · ")
+    }
+
+    init(
+        modelPattern: String,
+        displayName: String,
+        inputPerMillionUSD: Double,
+        cachedInputPerMillionUSD: Double,
+        cacheWritePerMillionUSD: Double? = nil,
+        outputPerMillionUSD: Double,
+        isKnown: Bool
+    ) {
+        self.modelPattern = modelPattern
+        self.displayName = displayName
+        self.inputPerMillionUSD = inputPerMillionUSD
+        self.cachedInputPerMillionUSD = cachedInputPerMillionUSD
+        self.cacheWritePerMillionUSD = cacheWritePerMillionUSD
+        self.outputPerMillionUSD = outputPerMillionUSD
+        self.isKnown = isKnown
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        modelPattern = try container.decode(String.self, forKey: .modelPattern)
+        displayName = try container.decode(String.self, forKey: .displayName)
+        inputPerMillionUSD = try container.decode(Double.self, forKey: .inputPerMillionUSD)
+        cachedInputPerMillionUSD = try container.decode(Double.self, forKey: .cachedInputPerMillionUSD)
+        cacheWritePerMillionUSD = try container.decodeIfPresent(Double.self, forKey: .cacheWritePerMillionUSD)
+        outputPerMillionUSD = try container.decode(Double.self, forKey: .outputPerMillionUSD)
+        isKnown = try container.decode(Bool.self, forKey: .isKnown)
     }
 
     static func defaultPricing(for model: String?, provider: CodexLogUsageProvider = .azure) -> AzureModelPricing {
+        let normalized = (model ?? "").lowercased()
+            .replacingOccurrences(of: "_", with: "-")
+            .replacingOccurrences(of: ".", with: "-")
+
+        if provider == .claudeCode || normalized.contains("claude-") {
+            if normalized.contains("opus") {
+                let isLegacyOpus = normalized.contains("opus-4-1") || normalized == "claude-opus-4"
+                if isLegacyOpus {
+                    return AzureModelPricing(
+                        modelPattern: "claude-opus-4-1",
+                        displayName: "Claude Opus 4.1 (legacy rates)",
+                        inputPerMillionUSD: 15.00,
+                        cachedInputPerMillionUSD: 1.50,
+                        cacheWritePerMillionUSD: 18.75,
+                        outputPerMillionUSD: 75.00,
+                        isKnown: true
+                    )
+                }
+                return AzureModelPricing(
+                    modelPattern: "claude-opus-4-5-plus",
+                    displayName: "Claude Opus 4.5+",
+                    inputPerMillionUSD: 5.00,
+                    cachedInputPerMillionUSD: 0.50,
+                    cacheWritePerMillionUSD: 6.25,
+                    outputPerMillionUSD: 25.00,
+                    isKnown: true
+                )
+            }
+            if normalized.contains("sonnet") {
+                return AzureModelPricing(
+                    modelPattern: "claude-sonnet-4",
+                    displayName: "Claude Sonnet 4.x",
+                    inputPerMillionUSD: 3.00,
+                    cachedInputPerMillionUSD: 0.30,
+                    cacheWritePerMillionUSD: 3.75,
+                    outputPerMillionUSD: 15.00,
+                    isKnown: true
+                )
+            }
+            if normalized.contains("haiku") {
+                return AzureModelPricing(
+                    modelPattern: "claude-haiku-4-5",
+                    displayName: "Claude Haiku 4.5",
+                    inputPerMillionUSD: 1.00,
+                    cachedInputPerMillionUSD: 0.10,
+                    cacheWritePerMillionUSD: 1.25,
+                    outputPerMillionUSD: 5.00,
+                    isKnown: true
+                )
+            }
+            if provider == .claudeCode {
+                return AzureModelPricing(
+                    modelPattern: model ?? "claude-unknown",
+                    displayName: "Unknown Claude pricing",
+                    inputPerMillionUSD: 0,
+                    cachedInputPerMillionUSD: 0,
+                    cacheWritePerMillionUSD: nil,
+                    outputPerMillionUSD: 0,
+                    isKnown: false
+                )
+            }
+        }
+
         if provider == .openai {
             return AzureModelPricing(
                 modelPattern: "openai-gpt55",
@@ -198,10 +324,6 @@ struct AzureModelPricing: Equatable, Codable {
                 isKnown: true
             )
         }
-
-        let normalized = (model ?? "").lowercased()
-            .replacingOccurrences(of: "_", with: "-")
-            .replacingOccurrences(of: ".", with: "-")
 
         if normalized.contains("gpt-5-5-pro") {
             return AzureModelPricing(
@@ -292,20 +414,47 @@ struct AzureModelPricing: Equatable, Codable {
 struct AzureTokenUsage: Equatable, Hashable, Codable {
     var inputTokens: Int
     var cachedInputTokens: Int
+    var cacheCreationInputTokens: Int
     var outputTokens: Int
     var reasoningOutputTokens: Int
     var totalTokens: Int
 
     var uncachedInputTokens: Int {
-        max(0, inputTokens - cachedInputTokens)
+        max(0, inputTokens - cachedInputTokens - cacheCreationInputTokens)
     }
 
     var isZero: Bool {
-        inputTokens == 0 && cachedInputTokens == 0 && outputTokens == 0 && reasoningOutputTokens == 0
+        inputTokens == 0 && cachedInputTokens == 0 && cacheCreationInputTokens == 0 && outputTokens == 0 && reasoningOutputTokens == 0
     }
 
     var signature: String {
-        "\(inputTokens),\(cachedInputTokens),\(outputTokens),\(reasoningOutputTokens),\(totalTokens)"
+        "\(inputTokens),\(cachedInputTokens),\(cacheCreationInputTokens),\(outputTokens),\(reasoningOutputTokens),\(totalTokens)"
+    }
+
+    init(
+        inputTokens: Int,
+        cachedInputTokens: Int,
+        cacheCreationInputTokens: Int = 0,
+        outputTokens: Int,
+        reasoningOutputTokens: Int,
+        totalTokens: Int
+    ) {
+        self.inputTokens = inputTokens
+        self.cachedInputTokens = cachedInputTokens
+        self.cacheCreationInputTokens = cacheCreationInputTokens
+        self.outputTokens = outputTokens
+        self.reasoningOutputTokens = reasoningOutputTokens
+        self.totalTokens = totalTokens
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        inputTokens = try container.decode(Int.self, forKey: .inputTokens)
+        cachedInputTokens = try container.decode(Int.self, forKey: .cachedInputTokens)
+        cacheCreationInputTokens = try container.decodeIfPresent(Int.self, forKey: .cacheCreationInputTokens) ?? 0
+        outputTokens = try container.decode(Int.self, forKey: .outputTokens)
+        reasoningOutputTokens = try container.decode(Int.self, forKey: .reasoningOutputTokens)
+        totalTokens = try container.decode(Int.self, forKey: .totalTokens)
     }
 }
 
