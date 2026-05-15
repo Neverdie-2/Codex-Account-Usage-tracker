@@ -60,6 +60,45 @@ Azure endpoint/resource/deployment grouping is best-effort. Codex session logs r
 
 Local Codex logs may not contain all Azure billing dimensions, pricing inputs, or server-side billing adjustments. Azure prices can vary by model version, deployment type, region/data zone, provisioned throughput, reservations, batch discounts, enterprise agreement, and future price changes. Treat this dashboard as a local token-usage and estimated-cost view, not an Azure billing statement.
 
+## Claude Code Usage Dashboard
+
+The Claude Code Usage section scans local Claude Code transcripts and tracks token usage and estimated cost per project, model, and session. Like the Azure and OpenAI Codex dashboards, results are cached locally and refreshes are incremental from the latest known event.
+
+Log path scanned:
+
+```text
+~/.claude/projects/**/*.jsonl
+```
+
+Counting rules:
+
+- Only lines with `type == "assistant"` are counted.
+- Lines with `message.model == "<synthetic>"` or all-zero usage are skipped (these are local UI-injected messages, not API calls).
+- De-dup is by `message.id`. Anthropic message IDs are globally unique, so the same response appearing in multiple transcripts (e.g. forked or resumed sessions) only counts once across the whole scan.
+- Project attribution uses the `cwd` field on each assistant line; missing values are grouped as `unknown project`.
+- Session attribution uses the transcript filename (the session UUID); subagent transcripts under `<session>/subagents/agent-*.jsonl` count as separate sessions.
+
+The Claude Code usage record carries four input token classes instead of three: uncached input (`input_tokens`), cache reads (`cache_read_input_tokens`), and cache writes (`cache_creation_input_tokens`), plus output tokens. A conditional **Cache write** tile is shown in the dashboard's totals row whenever cache_creation tokens are present.
+
+Cost estimates use Anthropic's published 5-minute-TTL prompt-caching prices (per 1M tokens):
+
+| Model | Input | 5m Cache Write | Cache Read | Output |
+| --- | --- | --- | --- | --- |
+| Opus 4.5 / 4.6 / 4.7 | $5.00 | $6.25 | $0.50 | $25.00 |
+| Opus 4.1 (legacy) | $15.00 | $18.75 | $1.50 | $75.00 |
+| Sonnet 4.5 / 4.6 | $3.00 | $3.75 | $0.30 | $15.00 |
+| Haiku 4.5 | $1.00 | $1.25 | $0.10 | $5.00 |
+
+Azure AI Foundry uses the same base rates for Opus 4.6/4.7 (regional endpoints add a 10% premium, but Claude Code's default routing is global). Anthropic Fast mode (6× rates) and Priority service tier are not detected — the dashboard assumes standard speed and standard tier. If transcripts ever record `usage.speed == "fast"` or `usage.service_tier == "priority"`, the dashboard will underestimate those rows.
+
+The Claude Code cache file lives at:
+
+```text
+~/Library/Application Support/CodexAccountTracker/claude-code-usage-cache.json
+```
+
+It stores usage summaries and records only, never message content.
+
 ## How Updates Work
 
 - `Live Monitor` connects to the configured local Codex app-server and listens for `account/updated` and `account/rateLimits/updated`.
