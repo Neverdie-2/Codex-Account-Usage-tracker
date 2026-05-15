@@ -575,7 +575,6 @@ private struct AzureUsageSectionView: View {
 
 private struct OpenAIUsageSectionView: View {
     @EnvironmentObject private var viewModel: AccountTrackerViewModel
-    @State private var isConfirmingAllTimeScan = false
 
     var body: some View {
         CodexLogUsageSectionView(
@@ -592,26 +591,8 @@ private struct OpenAIUsageSectionView: View {
             endpointLabel: { group in
                 "\(group.endpoint) • \(group.deployment)"
             },
-            refresh: {
-                if viewModel.openAIUsageScanMode.requiresConfirmation {
-                    isConfirmingAllTimeScan = true
-                } else {
-                    viewModel.refreshOpenAIUsage()
-                }
-            }
+            refresh: viewModel.refreshOpenAIUsage
         )
-        .confirmationDialog(
-            "Refresh all OpenAI Codex history?",
-            isPresented: $isConfirmingAllTimeScan,
-            titleVisibility: .visible
-        ) {
-            Button("Refresh all history") {
-                viewModel.refreshOpenAIUsage()
-            }
-            Button("Cancel", role: .cancel) {}
-        } message: {
-            Text("OpenAI Codex history can include very large JSONL files. Recent windows are recommended for normal use.")
-        }
     }
 }
 
@@ -870,9 +851,11 @@ private enum AzureUsageLowerFont {
 
 private enum AzureUsageColumnWidth {
     static let events: CGFloat = 64
-    static let tokens: CGFloat = 92
+    static let tokens: CGFloat = 82
+    static let cached: CGFloat = 82
+    static let uncached: CGFloat = 88
     static let output: CGFloat = 82
-    static let total: CGFloat = 100
+    static let total: CGFloat = 94
     static let cost: CGFloat = 88
     static let sessions: CGFloat = 66
     static let projectEvents: CGFloat = 58
@@ -952,6 +935,10 @@ private struct AzureUsageHeaderRow: View {
                 .frame(width: AzureUsageColumnWidth.events, alignment: .trailing)
             Text("Input")
                 .frame(width: AzureUsageColumnWidth.tokens, alignment: .trailing)
+            Text("Cached")
+                .frame(width: AzureUsageColumnWidth.cached, alignment: .trailing)
+            Text("Uncached")
+                .frame(width: AzureUsageColumnWidth.uncached, alignment: .trailing)
             Text("Output")
                 .frame(width: AzureUsageColumnWidth.output, alignment: .trailing)
             Text("Total")
@@ -986,6 +973,16 @@ private struct AzureUsageRow: View {
                 .lineLimit(1)
                 .textSelection(.enabled)
                 .frame(width: AzureUsageColumnWidth.tokens, alignment: .trailing)
+            Text(AzureUsageFormat.integer(totals.cachedInputTokens))
+                .monospacedDigit()
+                .lineLimit(1)
+                .textSelection(.enabled)
+                .frame(width: AzureUsageColumnWidth.cached, alignment: .trailing)
+            Text(AzureUsageFormat.integer(totals.uncachedInputTokens))
+                .monospacedDigit()
+                .lineLimit(1)
+                .textSelection(.enabled)
+                .frame(width: AzureUsageColumnWidth.uncached, alignment: .trailing)
             Text(AzureUsageFormat.integer(totals.outputTokens))
                 .monospacedDigit()
                 .lineLimit(1)

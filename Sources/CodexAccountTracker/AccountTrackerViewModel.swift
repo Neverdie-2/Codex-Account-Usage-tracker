@@ -557,7 +557,7 @@ final class AccountTrackerViewModel: ObservableObject {
         }
 
         guard let selectedWindowStartDate else {
-            return nil
+            return incrementalStartDate
         }
 
         guard let earliestKnownEvent = previousResult.summary.earliestEvent ?? previousResult.records.map(\.timestamp).min() else {

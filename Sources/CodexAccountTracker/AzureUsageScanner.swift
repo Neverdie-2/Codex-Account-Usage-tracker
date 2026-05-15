@@ -25,7 +25,7 @@ final class AzureUsageScanner {
         var result = AzureUsageScanResult(provider: provider)
         var state = AzureUsageScanState()
         var warnings = metadata.warnings
-        let fileURLs = jsonlFileURLs(since: startDate, shouldPruneDatedPaths: provider == .openai)
+        let fileURLs = jsonlFileURLs(since: startDate)
         result.summary.filesScanned = fileURLs.count
 
         if provider == .openai {
@@ -240,7 +240,7 @@ final class AzureUsageScanner {
         for root in logRoots where fileManager.fileExists(atPath: root.path) {
             guard let enumerator = fileManager.enumerator(
                 at: root,
-                includingPropertiesForKeys: [.isDirectoryKey, .isRegularFileKey],
+                includingPropertiesForKeys: [.isDirectoryKey, .isRegularFileKey, .contentModificationDateKey],
                 options: [.skipsHiddenFiles]
             ) else {
                 continue
@@ -266,24 +266,37 @@ final class AzureUsageScanner {
     }
 
     private func isDatedDirectory(_ url: URL, before startDate: Date) -> Bool {
-        guard let values = try? url.resourceValues(forKeys: [.isDirectoryKey]),
+        guard let values = try? url.resourceValues(forKeys: [.isDirectoryKey, .contentModificationDateKey]),
               values.isDirectory == true,
               let pathDate = Self.dateFromPath(url)
         else { return false }
 
-        return Calendar.current.startOfDay(for: pathDate) < Calendar.current.startOfDay(for: startDate)
+        guard Calendar.current.startOfDay(for: pathDate) < Calendar.current.startOfDay(for: startDate) else {
+            return false
+        }
+
+        if let modificationDate = values.contentModificationDate,
+           modificationDate >= startDate {
+            return false
+        }
+
+        return true
     }
 
     private func shouldSkip(url: URL, before startDate: Date, shouldPruneDatedPaths: Bool) -> Bool {
+        let values = try? url.resourceValues(forKeys: [.contentModificationDateKey])
         if shouldPruneDatedPaths,
            let pathDate = Self.dateFromPath(url),
            Calendar.current.startOfDay(for: pathDate) < Calendar.current.startOfDay(for: startDate) {
+            if let modificationDate = values?.contentModificationDate,
+               modificationDate >= startDate {
+                return false
+            }
             return true
         }
 
         if Self.dateFromPath(url) == nil,
-           let values = try? url.resourceValues(forKeys: [.contentModificationDateKey]),
-           let modificationDate = values.contentModificationDate,
+           let modificationDate = values?.contentModificationDate,
            modificationDate < startDate {
             return true
         }
@@ -1016,26 +1029,54 @@ private final class AzureUsageMetadataDetector {
 }
 
 private final class LineReader {
-    private let data: Data
-    private let lines: [Data.SubSequence]
-    private var index = 0
+    private let fileHandle: FileHandle
+    private var buffer = Data()
+    private var offset: UInt64 = 0
+    private var didReachEOF = false
+    private let chunkSize = 64 * 1024
 
     init?(url: URL) {
-        guard let data = try? Data(contentsOf: url) else {
+        guard let fileHandle = try? FileHandle(forReadingFrom: url) else {
             return nil
         }
-        self.data = data
-        self.lines = data.split(separator: 0x0A, omittingEmptySubsequences: false)
+        self.fileHandle = fileHandle
     }
 
     func nextLineData() -> Data? {
-        guard index < lines.count else { return nil }
-        defer { index += 1 }
-        var line = lines[index]
-        if line.last == 0x0D {
-            line = line.dropLast()
+        while true {
+            if let newlineRange = buffer.firstRange(of: Data([0x0A])) {
+                var line = buffer[..<newlineRange.lowerBound]
+                let consumed = buffer.distance(from: buffer.startIndex, to: newlineRange.upperBound)
+                buffer.removeSubrange(..<newlineRange.upperBound)
+                offset += UInt64(consumed)
+                if line.last == 0x0D {
+                    line = line.dropLast()
+                }
+                return Data(line)
+            }
+
+            if didReachEOF {
+                guard !buffer.isEmpty else { return nil }
+                let line = buffer
+                offset += UInt64(buffer.count)
+                buffer.removeAll(keepingCapacity: true)
+                if line.last == 0x0D {
+                    return line.dropLast()
+                }
+                return line
+            }
+
+            let chunk = fileHandle.readData(ofLength: chunkSize)
+            if chunk.isEmpty {
+                didReachEOF = true
+            } else {
+                buffer.append(chunk)
+            }
         }
-        return Data(line)
+    }
+
+    deinit {
+        try? fileHandle.close()
     }
 }
 
