@@ -104,6 +104,8 @@ final class AccountTrackerViewModel: ObservableObject {
     private var azureScanResult = AzureUsageScanResult.empty
     private var openAIScanResult = AzureUsageScanResult(provider: .openai)
     private var claudeCodeScanResult = AzureUsageScanResult(provider: .claudeCode)
+    private let desktopChatStore = ClaudeDesktopChatStore()
+    private var desktopChatRecords: [AzureUsageRecord] = []
     private var openAIAPIBillingResult = OpenAIAPIBillingResult.empty
     private var refreshTask: Task<Void, Never>?
     private var displayClockTask: Task<Void, Never>?
@@ -235,6 +237,10 @@ final class AccountTrackerViewModel: ObservableObject {
             azureLastScannedAt = scannedAt
             usageCacheStore.save(azureScanResult, scannedAt: scannedAt)
             rebuildAzureUsageDashboard()
+            // Claude dashboard folds Claude-named records from azureScanResult into its own
+            // view (see rebuildClaudeCodeUsageDashboard), so it must rebuild when Azure data
+            // changes — otherwise the Claude panel keeps showing stale Azure-Claude figures.
+            rebuildClaudeCodeUsageDashboard()
         }
     }
 
@@ -267,13 +273,23 @@ final class AccountTrackerViewModel: ObservableObject {
     func refreshClaudeCodeUsage() {
         guard !isClaudeCodeRefreshing else { return }
         isClaudeCodeRefreshing = true
+        desktopChatRecords = desktopChatStore.recordsFromEntries(desktopChatStore.refreshAndLoad())
         let previousResult = claudeCodeScanResult
-        let startDate = Self.openAIUsageRefreshStartDate(
-            previousResult: previousResult,
-            scanMode: claudeCodeUsageScanMode,
-            now: displayNow,
-            customStartDate: claudeCodeCustomStartDate
-        )
+        // Trigger a one-time full backfill scan when we've never reached the foundry roots
+        // (either a brand new install or upgrading from a build that didn't scan them).
+        // The persistent flag prevents repaying full-scan cost forever on machines that
+        // have no foundry data; the scan-state check is a defensive fallback if the
+        // preference is ever cleared.
+        let needsFoundryBackfill = !AppPreferences.claudeCodeFoundryBackfillDone
+            && !Self.scanResultIncludesFoundry(previousResult)
+        let startDate: Date? = needsFoundryBackfill
+            ? nil
+            : Self.openAIUsageRefreshStartDate(
+                previousResult: previousResult,
+                scanMode: claudeCodeUsageScanMode,
+                now: displayNow,
+                customStartDate: claudeCodeCustomStartDate
+            )
 
         Task { [weak self, claudeCodeUsageScanner, usageCacheStore] in
             let result = await Task.detached(priority: .utility) {
@@ -286,6 +302,9 @@ final class AccountTrackerViewModel: ObservableObject {
             claudeCodeScanResult = Self.mergedUsageResult(previousResult, with: result)
             claudeCodeLastScannedAt = scannedAt
             usageCacheStore.save(claudeCodeScanResult, scannedAt: scannedAt)
+            if needsFoundryBackfill {
+                AppPreferences.claudeCodeFoundryBackfillDone = true
+            }
             rebuildClaudeCodeUsageDashboard()
         }
     }
@@ -388,8 +407,9 @@ final class AccountTrackerViewModel: ObservableObject {
         if let claudeCache = usageCacheStore.load(provider: .claudeCode) {
             claudeCodeScanResult = claudeCache.result
             claudeCodeLastScannedAt = claudeCache.scannedAt
-            rebuildClaudeCodeUsageDashboard()
         }
+        desktopChatRecords = desktopChatStore.loadCachedRecords()
+        rebuildClaudeCodeUsageDashboard()
 
         if let apiBillingCache = openAIAPIBillingCacheStore.load() {
             openAIAPIBillingResult = apiBillingCache.result
@@ -572,8 +592,25 @@ final class AccountTrackerViewModel: ObservableObject {
     }
 
     private func rebuildClaudeCodeUsageDashboard() {
+        var combined = claudeCodeScanResult
+        let azureClaudeRecords = azureScanResult.records
+            .filter { $0.model.lowercased().contains("claude") }
+            .map { record -> AzureUsageRecord in
+                var relabeled = record
+                relabeled.id = "azure-" + record.id
+                relabeled.endpoint = "Azure"
+                relabeled.resource = "Codex via Azure"
+                return relabeled
+            }
+        if !azureClaudeRecords.isEmpty {
+            combined.records.append(contentsOf: azureClaudeRecords)
+        }
+        if !desktopChatRecords.isEmpty {
+            combined.records.append(contentsOf: desktopChatRecords)
+        }
+        combined.records.sort { $0.timestamp < $1.timestamp }
         claudeCodeUsage = AzureUsageScanner.dashboard(
-            from: claudeCodeScanResult,
+            from: combined,
             window: claudeCodeUsageScanMode.usageWindow,
             customStartDate: claudeCodeCustomStartDate,
             now: displayNow
@@ -589,12 +626,36 @@ final class AccountTrackerViewModel: ObservableObject {
         openAIAPIBilling = OpenAIAPIBillingDashboard.make(from: filtered)
     }
 
+    private static func scanResultIncludesFoundry(_ result: AzureUsageScanResult) -> Bool {
+        // claudeCodeFoundryRootPaths() returns standardized paths, but record.filePath comes
+        // straight from URL.path in the scanner — non-standardized. On macOS those usually
+        // match, but symlinks (/private/Users vs /Users, etc.) can diverge. Standardize the
+        // record side here so the prefix check never misses a legitimately-foundry record.
+        let foundryRoots = AzureUsageScanner.claudeCodeFoundryRootPaths()
+        return result.records.contains { record in
+            let standardizedPath = URL(fileURLWithPath: record.filePath).standardizedFileURL.path
+            return foundryRoots.contains { standardizedPath.hasPrefix($0) }
+        }
+    }
+
     private static func mergedUsageResult(_ existing: AzureUsageScanResult, with incremental: AzureUsageScanResult) -> AzureUsageScanResult {
         guard !existing.records.isEmpty else { return incremental }
 
         var recordsByID = Dictionary(uniqueKeysWithValues: existing.records.map { ($0.id, $0) })
         for record in incremental.records {
-            recordsByID[record.id] = record
+            if let priorRecord = recordsByID[record.id], existing.provider == .azure {
+                // Azure endpoint/resource are inferred from current local config and can drift
+                // when the user changes their codex-azure wrapper or config.toml. Once an Azure
+                // record's labels are captured, keep them sticky so historical sessions don't
+                // get relabeled to whatever endpoint is currently configured.
+                var preserved = record
+                preserved.endpoint = priorRecord.endpoint
+                preserved.resource = priorRecord.resource
+                preserved.deployment = priorRecord.deployment
+                recordsByID[record.id] = preserved
+            } else {
+                recordsByID[record.id] = record
+            }
         }
 
         var result = AzureUsageScanResult(provider: existing.provider)
@@ -621,21 +682,30 @@ final class AccountTrackerViewModel: ObservableObject {
         now: Date,
         customStartDate: Date
     ) -> Date? {
-        let selectedWindowStartDate = scanMode.startDate(now: now, customStartDate: customStartDate)
+        windowAwareRefreshStartDate(
+            previousResult: previousResult,
+            windowStartDate: scanMode.startDate(now: now, customStartDate: customStartDate)
+        )
+    }
+
+    private static func windowAwareRefreshStartDate(
+        previousResult: AzureUsageScanResult,
+        windowStartDate: Date?
+    ) -> Date? {
         guard let incrementalStartDate = incrementalUsageRefreshStartDate(from: previousResult) else {
-            return selectedWindowStartDate
+            return windowStartDate
         }
 
-        guard let selectedWindowStartDate else {
+        guard let windowStartDate else {
             return incrementalStartDate
         }
 
         guard let earliestKnownEvent = previousResult.summary.earliestEvent ?? previousResult.records.map(\.timestamp).min() else {
-            return selectedWindowStartDate
+            return windowStartDate
         }
 
-        if selectedWindowStartDate < earliestKnownEvent {
-            return selectedWindowStartDate
+        if windowStartDate < earliestKnownEvent {
+            return windowStartDate
         }
 
         return incrementalStartDate

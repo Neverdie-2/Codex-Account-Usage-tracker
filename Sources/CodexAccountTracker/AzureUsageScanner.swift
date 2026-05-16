@@ -234,7 +234,20 @@ final class AzureUsageScanner {
     static func defaultClaudeCodeLogRoots() -> [URL] {
         let home = FileManager.default.homeDirectoryForCurrentUser
         return [
-            home.appendingPathComponent(".claude/projects", isDirectory: true)
+            home.appendingPathComponent(".claude/projects", isDirectory: true),
+            home.appendingPathComponent(".claude-foundry/projects", isDirectory: true),
+            home.appendingPathComponent(".claude-foundry/projects-archive", isDirectory: true)
+        ]
+    }
+
+    static func claudeCodeFoundryRootPaths() -> [String] {
+        let home = FileManager.default.homeDirectoryForCurrentUser
+        // Trailing slash so hasPrefix(".../projects/") can't match ".../projects-archive/...".
+        return [
+            home.appendingPathComponent(".claude-foundry/projects", isDirectory: true)
+                .standardizedFileURL.path + "/",
+            home.appendingPathComponent(".claude-foundry/projects-archive", isDirectory: true)
+                .standardizedFileURL.path + "/"
         ]
     }
 
@@ -246,6 +259,13 @@ final class AzureUsageScanner {
     }
 
     static func defaultMetadataURLs() -> [URL] {
+        // /opt/homebrew/bin/codex-azure is the user's wrapper script. It tells us the
+        // currently-configured Azure base_url, which is the only available endpoint
+        // signal — session_meta payloads don't record base_url. The "label drift" risk
+        // when the wrapper changes is mitigated by the sticky-merge logic in
+        // AccountTrackerViewModel.mergedUsageResult: existing Azure records keep their
+        // endpoint/resource/deployment across scans, so historical labels never get
+        // retroactively rewritten by a newer wrapper.
         let home = FileManager.default.homeDirectoryForCurrentUser
         return [
             home.appendingPathComponent(".codex/config.toml"),
@@ -617,14 +637,32 @@ final class AzureUsageScanner {
         result: inout AzureUsageScanResult,
         state: inout AzureUsageScanState
     ) {
-        let metadata = AzureUsageDetectedMetadata(
+        let anthropicMetadata = AzureUsageDetectedMetadata(
             endpoint: "Anthropic",
             resource: "Claude Code transcripts",
             deployment: nil,
             warnings: []
         )
+        let foundryMetadata = AzureUsageDetectedMetadata(
+            endpoint: "Azure Foundry",
+            resource: "Claude Code via Foundry",
+            deployment: nil,
+            warnings: []
+        )
+        let anthropicDesktopMetadata = AzureUsageDetectedMetadata(
+            endpoint: "Anthropic",
+            resource: "Claude Desktop app",
+            deployment: nil,
+            warnings: []
+        )
+        let foundryRootPaths = Self.claudeCodeFoundryRootPaths()
 
         for fileURL in fileURLs {
+            let standardizedPath = fileURL.standardizedFileURL.path
+            let isFoundry = foundryRootPaths.contains { standardizedPath.hasPrefix($0) }
+            // Default metadata; per-event entrypoint can override for Foundry-dir files written
+            // by the macOS Claude desktop app's embedded Claude Code (entrypoint=claude-desktop).
+            let defaultMetadata = isFoundry ? foundryMetadata : anthropicMetadata
             let sessionID = fileURL.deletingPathExtension().lastPathComponent
             var sawAssistantLine = false
             var didCountProviderSession = false
@@ -660,6 +698,10 @@ final class AzureUsageScanner {
                     ?? Self.unknownModel
                 if model == "<synthetic>" { continue }
                 let cwd = object["cwd"] as? String
+                let entrypoint = (object["entrypoint"] as? String) ?? ""
+                let metadata = (isFoundry && entrypoint == "claude-desktop")
+                    ? anthropicDesktopMetadata
+                    : defaultMetadata
 
                 let usage = Self.claudeCodeTokenUsage(from: usageDict)
                 if usage.isZero { continue }
