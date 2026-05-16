@@ -474,10 +474,6 @@ final class AzureUsageScanner {
     }
 
     private func parseOpenAIFile(fileURL: URL, rootURL: URL?) -> AzureUsageParsedSession? {
-        guard let lineReader = LineReader(url: fileURL) else {
-            return nil
-        }
-
         let fileSessionID = Self.sessionID(for: fileURL, rootURL: rootURL)
         var sessionID = fileSessionID
         var metaTimestamp: Date?
@@ -488,39 +484,39 @@ final class AzureUsageScanner {
         var parsedEvents: [AzureUsageParsedTokenEvent] = []
         var eventIndex = 0
 
-        while let lineData = lineReader.nextLineData() {
-            guard !lineData.isEmpty else { continue }
+        func consume(_ lineData: Data) -> Bool {
+            guard !lineData.isEmpty else { return true }
 
             if lineData.containsASCII(Self.sessionMetaBytes) {
-                guard let line = String(data: lineData, encoding: .utf8) else { return nil }
+                guard let line = String(data: lineData, encoding: .utf8) else { return false }
                 let sessionProvider = Self.extractStringValue(named: "model_provider", from: line)
                 let originator = Self.extractStringValue(named: "originator", from: line)
                 isTargetProviderSession = sessionProvider == provider.rawValue && originator == "Codex Desktop"
-                guard isTargetProviderSession else { return nil }
+                guard isTargetProviderSession else { return false }
                 if let id = Self.extractStringValue(named: "id", from: line), !id.isEmpty {
                     sessionID = id
                 }
                 metaTimestamp = Self.date(from: Self.extractStringValue(named: "timestamp", from: line))
                 forkedFromID = Self.extractStringValue(named: "forked_from_id", from: line)
                 projectPath = Self.extractProjectPath(from: line)
-                continue
+                return true
             }
 
-            guard isTargetProviderSession else { continue }
+            guard isTargetProviderSession else { return true }
 
             if lineData.containsASCII(Self.turnContextBytes) {
-                guard let line = String(data: lineData, encoding: .utf8) else { continue }
+                guard let line = String(data: lineData, encoding: .utf8) else { return true }
                 if let model = Self.extractModel(from: line), !model.isEmpty {
                     currentModel = model
                 }
-                continue
+                return true
             }
 
             guard lineData.containsASCII(Self.tokenCountBytes),
                   let line = String(data: lineData, encoding: .utf8),
                   let timestamp = Self.date(from: Self.extractStringValue(named: "timestamp", from: line)),
                   let lastUsage = Self.extractTokenUsage(named: "last_token_usage", from: line, allowingMissingFields: true)
-            else { continue }
+            else { return true }
 
             let totalUsage = Self.extractTokenUsage(named: "total_token_usage", from: line, allowingMissingFields: true)
             eventIndex += 1
@@ -531,6 +527,20 @@ final class AzureUsageScanner {
                 lastUsage: lastUsage,
                 totalUsage: totalUsage
             ))
+            return true
+        }
+
+        if let relevantLines = Self.filteredRelevantLineData(fileURL: fileURL) {
+            for lineData in relevantLines {
+                guard consume(lineData) else { return nil }
+            }
+        } else {
+            guard let lineReader = LineReader(url: fileURL) else {
+                return nil
+            }
+            while let lineData = lineReader.nextLineData() {
+                guard consume(lineData) else { return nil }
+            }
         }
 
         guard isTargetProviderSession else { return nil }
@@ -803,6 +813,44 @@ final class AzureUsageScanner {
             return nil
         }
         return object
+    }
+
+    private static func filteredRelevantLineData(fileURL: URL) -> [Data]? {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/grep")
+        process.arguments = [
+            "-aE",
+            "\"type\":\"session_meta\"|\"type\":\"turn_context\"|\"payload\":\\{\"type\":\"token_count\"",
+            fileURL.path
+        ]
+
+        let output = Pipe()
+        process.standardOutput = output
+        process.standardError = Pipe()
+
+        do {
+            try process.run()
+        } catch {
+            return nil
+        }
+
+        let data = output.fileHandleForReading.readDataToEndOfFile()
+        process.waitUntilExit()
+
+        guard process.terminationStatus == 0 || process.terminationStatus == 1 else {
+            return nil
+        }
+        guard !data.isEmpty else {
+            return []
+        }
+
+        return data.split(separator: 0x0A, omittingEmptySubsequences: false).map { slice in
+            var line = Data(slice)
+            if line.last == 0x0D {
+                line.removeLast()
+            }
+            return line
+        }
     }
 
     private static func extractStringValue(named name: String, from line: String) -> String? {
