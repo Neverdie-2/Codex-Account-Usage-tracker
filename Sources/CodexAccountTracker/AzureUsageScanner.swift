@@ -656,6 +656,8 @@ final class AzureUsageScanner {
             warnings: []
         )
         let foundryRootPaths = Self.claudeCodeFoundryRootPaths()
+        var keyedRows: [String: AzureUsageParsedClaudeCodeEvent] = [:]
+        var unkeyedRows: [AzureUsageParsedClaudeCodeEvent] = []
 
         for fileURL in fileURLs {
             let standardizedPath = fileURL.standardizedFileURL.path
@@ -669,7 +671,8 @@ final class AzureUsageScanner {
 
             guard let lineReader = LineReader(url: fileURL) else { continue }
             result.summary.sessionsScanned += 1
-            var eventIndex = 0
+            var fileKeyedRows: [String: AzureUsageParsedClaudeCodeEvent] = [:]
+            var fileUnkeyedRows: [AzureUsageParsedClaudeCodeEvent] = []
 
             while let lineData = lineReader.nextLineData() {
                 guard !lineData.isEmpty else { continue }
@@ -687,6 +690,12 @@ final class AzureUsageScanner {
                     result.summary.malformedEventsSkipped += 1
                     continue
                 }
+                let requestID = object["requestId"] as? String
+                let logSessionID = (object["sessionId"] as? String)
+                    ?? (object["session_id"] as? String)
+                    ?? ((object["metadata"] as? [String: Any])?["sessionId"] as? String)
+                    ?? ((message["metadata"] as? [String: Any])?["sessionId"] as? String)
+                    ?? sessionID
 
                 guard let timestamp = Self.date(from: object["timestamp"]) else {
                     result.summary.malformedEventsSkipped += 1
@@ -706,12 +715,6 @@ final class AzureUsageScanner {
                 let usage = Self.claudeCodeTokenUsage(from: usageDict)
                 if usage.isZero { continue }
 
-                if !state.claudeCodeMessageKeys.insert(messageID).inserted {
-                    result.summary.duplicateEventsSkipped += 1
-                    continue
-                }
-
-                eventIndex += 1
                 if let eventCutoff, timestamp <= eventCutoff {
                     continue
                 }
@@ -721,23 +724,90 @@ final class AzureUsageScanner {
                     didCountProviderSession = true
                 }
 
-                appendRecord(
-                    sessionID: sessionID,
-                    recordID: "\(sessionID)-\(eventIndex)",
+                let row = AzureUsageParsedClaudeCodeEvent(
+                    sessionID: logSessionID,
                     fileURL: fileURL,
                     timestamp: timestamp,
                     metadata: metadata,
                     model: model,
                     usage: usage,
                     projectPath: AzureUsageRecord.normalizedProjectPath(cwd),
-                    result: &result
+                    messageID: messageID,
+                    requestID: requestID,
+                    isSidechain: Self.boolValue(object["isSidechain"]),
+                    pathRole: fileURL.path.contains("/subagents/") ? .subagent : .parent
                 )
+
+                if let billingKey = row.billingKey {
+                    // Streaming chunks share the same provider message/request identity inside
+                    // a transcript. Later chunks carry cumulative usage, so the last row wins
+                    // before we compare duplicates copied into other transcript files.
+                    fileKeyedRows[billingKey] = row
+                } else {
+                    fileUnkeyedRows.append(row)
+                }
             }
 
             if !sawAssistantLine {
                 result.summary.sessionsScanned -= 1
             }
+
+            for row in fileKeyedRows.values {
+                guard let billingKey = row.billingKey else {
+                    unkeyedRows.append(row)
+                    continue
+                }
+                if let existing = keyedRows[billingKey] {
+                    result.summary.duplicateEventsSkipped += 1
+                    if Self.claudeCodeRowWins(candidate: row, existing: existing) {
+                        keyedRows[billingKey] = row
+                    }
+                } else {
+                    keyedRows[billingKey] = row
+                }
+            }
+            unkeyedRows.append(contentsOf: fileUnkeyedRows)
         }
+
+        let rows = keyedRows.values.sorted { lhs, rhs in
+            if lhs.timestamp != rhs.timestamp { return lhs.timestamp < rhs.timestamp }
+            return lhs.recordID.localizedCaseInsensitiveCompare(rhs.recordID) == .orderedAscending
+        } + unkeyedRows
+
+        for row in rows {
+            appendRecord(
+                sessionID: row.sessionID,
+                recordID: row.recordID,
+                fileURL: row.fileURL,
+                timestamp: row.timestamp,
+                metadata: row.metadata,
+                model: row.model,
+                usage: row.usage,
+                projectPath: row.projectPath,
+                result: &result
+            )
+        }
+    }
+
+    private static func claudeCodeRowWins(candidate: AzureUsageParsedClaudeCodeEvent, existing: AzureUsageParsedClaudeCodeEvent) -> Bool {
+        let candidateCost = AzureModelPricing.defaultPricing(for: candidate.model, provider: .claudeCode).estimatedCost(for: candidate.usage)
+        let existingCost = AzureModelPricing.defaultPricing(for: existing.model, provider: .claudeCode).estimatedCost(for: existing.usage)
+        if candidateCost != existingCost {
+            return candidateCost > existingCost
+        }
+        if candidate.usage.totalTokens != existing.usage.totalTokens {
+            return candidate.usage.totalTokens > existing.usage.totalTokens
+        }
+        if candidate.usage.outputTokens != existing.usage.outputTokens {
+            return candidate.usage.outputTokens > existing.usage.outputTokens
+        }
+        if candidate.isSidechain != existing.isSidechain {
+            return !candidate.isSidechain
+        }
+        if candidate.pathRole != existing.pathRole {
+            return candidate.pathRole == .parent
+        }
+        return candidate.fileURL.path.localizedCaseInsensitiveCompare(existing.fileURL.path) == .orderedAscending
     }
 
     private static func claudeCodeTokenUsage(from usage: [String: Any]) -> AzureTokenUsage {
@@ -1031,6 +1101,12 @@ final class AzureUsageScanner {
         return nil
     }
 
+    private static func boolValue(_ value: Any?) -> Bool {
+        if let bool = value as? Bool { return bool }
+        if let number = value as? NSNumber { return number.boolValue }
+        return false
+    }
+
     private static func stringValue(_ value: Any?) -> String? {
         value as? String
     }
@@ -1109,7 +1185,6 @@ private struct AzureUsageProjectSessionAccumulator {
 
 private struct AzureUsageScanState {
     var openAIDedupeKeys = Set<String>()
-    var claudeCodeMessageKeys = Set<String>()
 }
 
 private struct AzureUsageParsedSession {
@@ -1128,6 +1203,39 @@ private struct AzureUsageParsedTokenEvent {
     var model: String
     var lastUsage: AzureTokenUsage
     var totalUsage: AzureTokenUsage?
+}
+
+private enum AzureUsageClaudeCodePathRole {
+    case parent
+    case subagent
+}
+
+private struct AzureUsageParsedClaudeCodeEvent {
+    var sessionID: String
+    var fileURL: URL
+    var timestamp: Date
+    var metadata: AzureUsageDetectedMetadata
+    var model: String
+    var usage: AzureTokenUsage
+    var projectPath: String
+    var messageID: String
+    var requestID: String?
+    var isSidechain: Bool
+    var pathRole: AzureUsageClaudeCodePathRole
+
+    var billingKey: String? {
+        if let requestID, !requestID.isEmpty {
+            return "\(messageID):\(requestID)"
+        }
+        return messageID.isEmpty ? nil : messageID
+    }
+
+    var recordID: String {
+        if let requestID, !requestID.isEmpty {
+            return "claude-code-\(messageID)-\(requestID)"
+        }
+        return "claude-code-\(messageID)"
+    }
 }
 
 private struct AzureUsageDetectedMetadata {

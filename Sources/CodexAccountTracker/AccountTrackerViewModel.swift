@@ -116,6 +116,7 @@ final class AccountTrackerViewModel: ObservableObject {
     private var isManagingServerLifecycle = false
     private var isStartingLiveMonitoring = false
     private var isRecoveringAuthChange = false
+    private var shouldRebuildClaudeCodeUsageCache = false
     private var lastAuthFileSignature: AuthFileSignature?
     private var lastAuthChangeRecoveryAt: Date?
     private static let openAIAdminKeyAccount = "openai-admin-api-key"
@@ -210,6 +211,9 @@ final class AccountTrackerViewModel: ObservableObject {
         }
         statusText = accounts.isEmpty ? "Idle" : "Saved"
         loadUsageCaches()
+        if shouldRebuildClaudeCodeUsageCache {
+            refreshClaudeCodeUsage()
+        }
         await startLiveMonitoring()
     }
 
@@ -282,7 +286,8 @@ final class AccountTrackerViewModel: ObservableObject {
         // preference is ever cleared.
         let needsFoundryBackfill = !AppPreferences.claudeCodeFoundryBackfillDone
             && !Self.scanResultIncludesFoundry(previousResult)
-        let startDate: Date? = needsFoundryBackfill
+        let needsFullRebuild = shouldRebuildClaudeCodeUsageCache || needsFoundryBackfill
+        let startDate: Date? = needsFullRebuild
             ? nil
             : Self.openAIUsageRefreshStartDate(
                 previousResult: previousResult,
@@ -299,9 +304,12 @@ final class AccountTrackerViewModel: ObservableObject {
             guard let self else { return }
             defer { isClaudeCodeRefreshing = false }
             let scannedAt = Date()
-            claudeCodeScanResult = Self.mergedUsageResult(previousResult, with: result)
+            claudeCodeScanResult = needsFullRebuild
+                ? result
+                : Self.mergedUsageResult(previousResult, with: result)
             claudeCodeLastScannedAt = scannedAt
             usageCacheStore.save(claudeCodeScanResult, scannedAt: scannedAt)
+            shouldRebuildClaudeCodeUsageCache = false
             if needsFoundryBackfill {
                 AppPreferences.claudeCodeFoundryBackfillDone = true
             }
@@ -407,6 +415,7 @@ final class AccountTrackerViewModel: ObservableObject {
         if let claudeCache = usageCacheStore.load(provider: .claudeCode) {
             claudeCodeScanResult = claudeCache.result
             claudeCodeLastScannedAt = claudeCache.scannedAt
+            shouldRebuildClaudeCodeUsageCache = Self.needsClaudeCodeFullRebuild(claudeCache.result)
         }
         desktopChatRecords = desktopChatStore.loadCachedRecords()
         rebuildClaudeCodeUsageDashboard()
@@ -635,6 +644,17 @@ final class AccountTrackerViewModel: ObservableObject {
         return result.records.contains { record in
             let standardizedPath = URL(fileURLWithPath: record.filePath).standardizedFileURL.path
             return foundryRoots.contains { standardizedPath.hasPrefix($0) }
+        }
+    }
+
+    private static func needsClaudeCodeFullRebuild(_ result: AzureUsageScanResult) -> Bool {
+        guard result.provider == .claudeCode, !result.records.isEmpty else { return false }
+        return result.records.contains { record in
+            guard record.id.hasPrefix("claude-code-") else { return true }
+            let stableID = String(record.id.dropFirst("claude-code-".count))
+            return record.id.hasPrefix("claude-code-request-")
+                || record.id.hasPrefix("claude-code-message-")
+                || !stableID.hasPrefix("msg_")
         }
     }
 

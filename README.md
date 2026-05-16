@@ -74,7 +74,7 @@ Counting rules:
 
 - Only lines with `type == "assistant"` are counted.
 - Lines with `message.model == "<synthetic>"` or all-zero usage are skipped (these are local UI-injected messages, not API calls).
-- De-dup is by `message.id`. Anthropic message IDs are globally unique, so the same response appearing in multiple transcripts (e.g. forked or resumed sessions) only counts once across the whole scan.
+- Streaming chunks with the same Anthropic `message.id` + `requestId` inside one transcript keep the final cumulative row. Cross-file duplicates are de-duped globally by that provider identity, because forked/resumed transcripts can copy the same response into multiple session files. Claude Code records use `message.id` + `requestId` as cache keys; older synthetic, session-scoped, or message-only caches are rebuilt from raw transcripts once after upgrade.
 - Project attribution uses the `cwd` field on each assistant line; missing values are grouped as `unknown project`.
 - Session attribution uses the transcript filename (the session UUID); subagent transcripts under `<session>/subagents/agent-*.jsonl` count as separate sessions.
 
