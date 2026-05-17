@@ -5,8 +5,8 @@ struct AppPreferences {
         static let endpoint = "codexAccountTracker.endpoint"
         static let openAIAPIUsageWindow = "codexAccountTracker.openAIAPIUsageWindow"
         static let claudeCodeFoundryBackfillDone = "codexAccountTracker.claudeCodeFoundryBackfillDone"
-        static let openAICodexForkReplayBackfillDone = "codexAccountTracker.openAICodexForkReplayBackfillDone"
-        static let azureCodexForkReplayBackfillDone = "codexAccountTracker.azureCodexForkReplayBackfillDone"
+        static let openAICodexForkReplayBackfillDone = "codexAccountTracker.openAICodexForkReplayBackfillDone.v4"
+        static let azureCodexForkReplayBackfillDone = "codexAccountTracker.azureCodexForkReplayBackfillDone.v4"
     }
 
     static let privateEndpoint = "ws://127.0.0.1:14567"

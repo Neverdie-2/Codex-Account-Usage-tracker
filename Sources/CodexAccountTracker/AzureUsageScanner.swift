@@ -31,7 +31,12 @@ final class AzureUsageScanner {
         var result = AzureUsageScanResult(provider: provider)
         var state = AzureUsageScanState()
         var warnings = metadata.warnings
-        let fileURLs = jsonlFileURLs(since: startDate)
+        let fileURLs = switch provider {
+        case .openai, .azure:
+            jsonlFileURLs()
+        case .claudeCode:
+            jsonlFileURLs(since: startDate)
+        }
         result.summary.filesScanned = fileURLs.count
 
         switch provider {
@@ -388,8 +393,12 @@ final class AzureUsageScanner {
         }
 
         result.summary.sessionsScanned = sessions.count
-        result.summary.providerSessions = sessions.count
+        result.summary.providerSessions = sessions.filter(isTargetCodexLocalSession).count
         for session in sessions {
+            guard isTargetCodexLocalSession(session) else {
+                seedCodexLocalReplayState(from: session, state: &state)
+                continue
+            }
             processCodexLocalSession(session, metadata: metadata, eventCutoff: eventCutoff, result: &result, state: &state)
         }
     }
@@ -400,7 +409,9 @@ final class AzureUsageScanner {
         var metaTimestamp: Date?
         var forkedFromID: String?
         var projectPath = AzureUsageRecord.unknownProject
-        var isTargetProviderSession = false
+        var sessionProvider: String?
+        var originator: String?
+        var didReadCodexSessionMeta = false
         var didReadSessionMeta = false
         var currentModel: String?
         var parsedEvents: [AzureUsageParsedTokenEvent] = []
@@ -411,13 +422,15 @@ final class AzureUsageScanner {
 
             if lineData.containsASCII(Self.sessionMetaBytes) {
                 guard let line = String(data: lineData, encoding: .utf8) else { return false }
-                guard !didReadSessionMeta else { return true }
+                guard !didReadCodexSessionMeta else { return true }
+                didReadCodexSessionMeta = true
+                sessionProvider = Self.extractStringValue(named: "model_provider", from: line)
+                originator = Self.extractStringValue(named: "originator", from: line)
+                guard sessionProvider == CodexLogUsageProvider.openai.rawValue
+                    || sessionProvider == CodexLogUsageProvider.azure.rawValue
+                    || sessionProvider == "azure_echo"
+                else { return false }
                 didReadSessionMeta = true
-                let sessionProvider = Self.extractStringValue(named: "model_provider", from: line)
-                let originator = Self.extractStringValue(named: "originator", from: line)
-                isTargetProviderSession = sessionProvider == provider.rawValue
-                    && (provider != .openai || originator == "Codex Desktop")
-                guard isTargetProviderSession else { return false }
                 if let id = Self.extractStringValue(named: "id", from: line), !id.isEmpty {
                     sessionID = id
                 }
@@ -427,7 +440,7 @@ final class AzureUsageScanner {
                 return true
             }
 
-            guard isTargetProviderSession else { return true }
+            guard didReadSessionMeta else { return true }
 
             if lineData.containsASCII(Self.turnContextBytes) {
                 guard let line = String(data: lineData, encoding: .utf8) else { return true }
@@ -468,16 +481,30 @@ final class AzureUsageScanner {
             }
         }
 
-        guard isTargetProviderSession else { return nil }
+        guard didReadSessionMeta else { return nil }
         return AzureUsageParsedSession(
             filePath: fileURL.path,
             fileURL: fileURL,
             sessionID: sessionID,
+            provider: sessionProvider ?? "",
+            originator: originator,
             metaTimestamp: metaTimestamp,
             forkedFromID: forkedFromID,
             projectPath: projectPath,
             events: parsedEvents
         )
+    }
+
+    private func isTargetCodexLocalSession(_ session: AzureUsageParsedSession) -> Bool {
+        session.provider == provider.rawValue
+            && (provider != .openai || session.originator == "Codex Desktop")
+    }
+
+    private func seedCodexLocalReplayState(from session: AzureUsageParsedSession, state: inout AzureUsageScanState) {
+        for event in session.events {
+            guard let replayKey = replayDedupeKey(for: event) else { continue }
+            state.codexLocalReplayKeys.insert(replayKey)
+        }
     }
 
     private func processCodexLocalSession(
@@ -488,6 +515,7 @@ final class AzureUsageScanner {
         state: inout AzureUsageScanState
     ) {
         let replayPrefixCount = startupReplayPrefixCount(for: session, state: state)
+        let isForkedSession = session.forkedFromID?.isEmpty == false
         for (eventOffset, event) in session.events.enumerated() {
             let sessionDedupeKey = event.totalUsage.map { "\(session.sessionID)|\($0.signature)" }
             let replayKey = replayDedupeKey(for: event)
@@ -510,11 +538,28 @@ final class AzureUsageScanner {
                 continue
             }
 
+            if isForkedSession,
+               let replayKey,
+               state.codexLocalReplayKeys.contains(replayKey) {
+                result.summary.startupReplayEventsSkipped += 1
+                continue
+            }
+
             if let sessionDedupeKey {
                 guard state.codexLocalDedupeKeys.insert(sessionDedupeKey).inserted else {
                     result.summary.duplicateEventsSkipped += 1
+                    if let replayKey {
+                        state.codexLocalReplayKeys.insert(replayKey)
+                    }
                     continue
                 }
+            }
+
+            if event.lastUsage.isZero {
+                if let replayKey {
+                    state.codexLocalReplayKeys.insert(replayKey)
+                }
+                continue
             }
 
             appendRecord(
@@ -1141,6 +1186,8 @@ private struct AzureUsageParsedSession {
     var filePath: String
     var fileURL: URL
     var sessionID: String
+    var provider: String
+    var originator: String?
     var metaTimestamp: Date?
     var forkedFromID: String?
     var projectPath: String

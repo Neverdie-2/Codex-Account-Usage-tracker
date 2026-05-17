@@ -384,17 +384,6 @@ struct AzureModelPricing: Equatable, Codable {
             }
         }
 
-        if provider == .openai {
-            return AzureModelPricing(
-                modelPattern: "openai-gpt55",
-                displayName: "GPT-5.5 equivalent estimate",
-                inputPerMillionUSD: 5.00,
-                cachedInputPerMillionUSD: 0.50,
-                outputPerMillionUSD: 30.00,
-                isKnown: true
-            )
-        }
-
         if normalized.contains("gpt-5-5-pro") {
             return AzureModelPricing(
                 modelPattern: "gpt-5.5-pro",
@@ -413,6 +402,17 @@ struct AzureModelPricing: Equatable, Codable {
                 inputPerMillionUSD: 5.00,
                 cachedInputPerMillionUSD: 0.50,
                 outputPerMillionUSD: 30.00,
+                isKnown: true
+            )
+        }
+
+        if normalized.contains("gpt-5-3-codex") || normalized.contains("gpt-53-codex") {
+            return AzureModelPricing(
+                modelPattern: "gpt-5.3-codex",
+                displayName: "GPT-5.3 Codex estimate",
+                inputPerMillionUSD: 1.75,
+                cachedInputPerMillionUSD: 0.175,
+                outputPerMillionUSD: 14.00,
                 isKnown: true
             )
         }
@@ -439,6 +439,17 @@ struct AzureModelPricing: Equatable, Codable {
             )
         }
 
+        if normalized.contains("gpt-5-2") || normalized.contains("gpt-52") {
+            return AzureModelPricing(
+                modelPattern: "gpt-5.2",
+                displayName: "GPT-5.2 estimate",
+                inputPerMillionUSD: 1.75,
+                cachedInputPerMillionUSD: 0.175,
+                outputPerMillionUSD: 14.00,
+                isKnown: true
+            )
+        }
+
         if provider == .openai, normalized.contains("codex-auto") {
             return AzureModelPricing(
                 modelPattern: "codex-auto-review",
@@ -457,6 +468,17 @@ struct AzureModelPricing: Equatable, Codable {
                 inputPerMillionUSD: 1.25,
                 cachedInputPerMillionUSD: 0.125,
                 outputPerMillionUSD: 10.00,
+                isKnown: true
+            )
+        }
+
+        if provider == .openai {
+            return AzureModelPricing(
+                modelPattern: "openai-gpt55",
+                displayName: "GPT-5.5 equivalent estimate",
+                inputPerMillionUSD: 5.00,
+                cachedInputPerMillionUSD: 0.50,
+                outputPerMillionUSD: 30.00,
                 isKnown: true
             )
         }
