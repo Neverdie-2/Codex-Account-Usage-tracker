@@ -5,6 +5,8 @@ struct AppPreferences {
         static let endpoint = "codexAccountTracker.endpoint"
         static let openAIAPIUsageWindow = "codexAccountTracker.openAIAPIUsageWindow"
         static let claudeCodeFoundryBackfillDone = "codexAccountTracker.claudeCodeFoundryBackfillDone"
+        static let openAICodexForkReplayBackfillDone = "codexAccountTracker.openAICodexForkReplayBackfillDone"
+        static let azureCodexForkReplayBackfillDone = "codexAccountTracker.azureCodexForkReplayBackfillDone"
     }
 
     static let privateEndpoint = "ws://127.0.0.1:14567"
@@ -37,5 +39,21 @@ struct AppPreferences {
     static var claudeCodeFoundryBackfillDone: Bool {
         get { UserDefaults.standard.bool(forKey: Keys.claudeCodeFoundryBackfillDone) }
         set { UserDefaults.standard.set(newValue, forKey: Keys.claudeCodeFoundryBackfillDone) }
+    }
+
+    /// One-shot marker for scanner upgrades that changed local Codex fork replay
+    /// suppression. Existing cached rows need a full rebuild once so copied
+    /// pre-fork token rows are removed from OpenAI local usage.
+    static var openAICodexForkReplayBackfillDone: Bool {
+        get { UserDefaults.standard.bool(forKey: Keys.openAICodexForkReplayBackfillDone) }
+        set { UserDefaults.standard.set(newValue, forKey: Keys.openAICodexForkReplayBackfillDone) }
+    }
+
+    /// One-shot marker for scanner upgrades that changed local Codex fork replay
+    /// suppression. Existing cached rows need a full rebuild once so copied
+    /// pre-fork token rows are removed from Azure local usage.
+    static var azureCodexForkReplayBackfillDone: Bool {
+        get { UserDefaults.standard.bool(forKey: Keys.azureCodexForkReplayBackfillDone) }
+        set { UserDefaults.standard.set(newValue, forKey: Keys.azureCodexForkReplayBackfillDone) }
     }
 }

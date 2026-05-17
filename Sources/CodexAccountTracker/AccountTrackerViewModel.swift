@@ -116,6 +116,8 @@ final class AccountTrackerViewModel: ObservableObject {
     private var isManagingServerLifecycle = false
     private var isStartingLiveMonitoring = false
     private var isRecoveringAuthChange = false
+    private var shouldRebuildAzureUsageCache = false
+    private var shouldRebuildOpenAIUsageCache = false
     private var shouldRebuildClaudeCodeUsageCache = false
     private var lastAuthFileSignature: AuthFileSignature?
     private var lastAuthChangeRecoveryAt: Date?
@@ -211,6 +213,12 @@ final class AccountTrackerViewModel: ObservableObject {
         }
         statusText = accounts.isEmpty ? "Idle" : "Saved"
         loadUsageCaches()
+        if shouldRebuildAzureUsageCache {
+            refreshAzureUsage()
+        }
+        if shouldRebuildOpenAIUsageCache {
+            refreshOpenAIUsage()
+        }
         if shouldRebuildClaudeCodeUsageCache {
             refreshClaudeCodeUsage()
         }
@@ -227,7 +235,10 @@ final class AccountTrackerViewModel: ObservableObject {
         guard !isAzureRefreshing else { return }
         isAzureRefreshing = true
         let previousResult = azureScanResult
-        let startDate = Self.incrementalUsageRefreshStartDate(from: previousResult)
+        let needsFullRebuild = shouldRebuildAzureUsageCache
+        let startDate = needsFullRebuild
+            ? nil
+            : Self.incrementalUsageRefreshStartDate(from: previousResult)
 
         Task { [weak self, azureScanner, usageCacheStore] in
             let result = await Task.detached(priority: .utility) {
@@ -237,9 +248,13 @@ final class AccountTrackerViewModel: ObservableObject {
             guard let self else { return }
             defer { isAzureRefreshing = false }
             let scannedAt = Date()
-            azureScanResult = Self.mergedUsageResult(previousResult, with: result)
+            azureScanResult = needsFullRebuild
+                ? result
+                : Self.mergedUsageResult(previousResult, with: result)
             azureLastScannedAt = scannedAt
             usageCacheStore.save(azureScanResult, scannedAt: scannedAt)
+            shouldRebuildAzureUsageCache = false
+            AppPreferences.azureCodexForkReplayBackfillDone = true
             rebuildAzureUsageDashboard()
             // Claude dashboard folds Claude-named records from azureScanResult into its own
             // view (see rebuildClaudeCodeUsageDashboard), so it must rebuild when Azure data
@@ -252,12 +267,15 @@ final class AccountTrackerViewModel: ObservableObject {
         guard !isOpenAIRefreshing else { return }
         isOpenAIRefreshing = true
         let previousResult = openAIScanResult
-        let startDate = Self.openAIUsageRefreshStartDate(
-            previousResult: previousResult,
-            scanMode: openAIUsageScanMode,
-            now: displayNow,
-            customStartDate: openAICustomStartDate
-        )
+        let needsFullRebuild = shouldRebuildOpenAIUsageCache
+        let startDate = needsFullRebuild
+            ? nil
+            : Self.openAIUsageRefreshStartDate(
+                previousResult: previousResult,
+                scanMode: openAIUsageScanMode,
+                now: displayNow,
+                customStartDate: openAICustomStartDate
+            )
 
         Task { [weak self, openAIUsageScanner, usageCacheStore] in
             let result = await Task.detached(priority: .utility) {
@@ -267,9 +285,13 @@ final class AccountTrackerViewModel: ObservableObject {
             guard let self else { return }
             defer { isOpenAIRefreshing = false }
             let scannedAt = Date()
-            openAIScanResult = Self.mergedUsageResult(previousResult, with: result)
+            openAIScanResult = needsFullRebuild
+                ? result
+                : Self.mergedUsageResult(previousResult, with: result)
             openAILastScannedAt = scannedAt
             usageCacheStore.save(openAIScanResult, scannedAt: scannedAt)
+            shouldRebuildOpenAIUsageCache = false
+            AppPreferences.openAICodexForkReplayBackfillDone = true
             rebuildOpenAIUsageDashboard()
         }
     }
@@ -403,12 +425,16 @@ final class AccountTrackerViewModel: ObservableObject {
         if let azureCache = usageCacheStore.load(provider: .azure) {
             azureScanResult = azureCache.result
             azureLastScannedAt = azureCache.scannedAt
+            shouldRebuildAzureUsageCache = !AppPreferences.azureCodexForkReplayBackfillDone
+                && !azureCache.result.records.isEmpty
             rebuildAzureUsageDashboard()
         }
 
         if let openAICache = usageCacheStore.load(provider: .openai) {
             openAIScanResult = openAICache.result
             openAILastScannedAt = openAICache.scannedAt
+            shouldRebuildOpenAIUsageCache = !AppPreferences.openAICodexForkReplayBackfillDone
+                && !openAICache.result.records.isEmpty
             rebuildOpenAIUsageDashboard()
         }
 

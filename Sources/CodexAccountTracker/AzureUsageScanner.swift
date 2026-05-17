@@ -35,15 +35,10 @@ final class AzureUsageScanner {
         result.summary.filesScanned = fileURLs.count
 
         switch provider {
-        case .openai:
-            scanOpenAISessions(fileURLs: fileURLs, eventCutoff: startDate, result: &result, state: &state)
+        case .openai, .azure:
+            scanCodexLocalSessions(fileURLs: fileURLs, metadata: metadata, eventCutoff: startDate, result: &result, state: &state)
         case .claudeCode:
             scanClaudeCodeSessions(fileURLs: fileURLs, eventCutoff: startDate, result: &result, state: &state)
-        case .azure:
-            for fileURL in fileURLs {
-                let rootURL = logRoots.first { fileURL.path.hasPrefix($0.path) }
-                scan(fileURL: fileURL, rootURL: rootURL, metadata: metadata, eventCutoff: startDate, result: &result, state: &state)
-            }
         }
 
         if result.records.contains(where: { $0.endpoint == AzureUsageScanner.unknownEndpoint }) {
@@ -370,103 +365,9 @@ final class AzureUsageScanner {
         return Calendar(identifier: .gregorian).date(from: DateComponents(year: year, month: month, day: day))
     }
 
-    private func scan(
-        fileURL: URL,
-        rootURL: URL?,
-        metadata: AzureUsageDetectedMetadata,
-        eventCutoff: Date?,
-        result: inout AzureUsageScanResult,
-        state: inout AzureUsageScanState
-    ) {
-        scanAzureFile(fileURL: fileURL, rootURL: rootURL, metadata: metadata, eventCutoff: eventCutoff, result: &result)
-    }
-
-    private func scanAzureFile(fileURL: URL, rootURL: URL?, metadata: AzureUsageDetectedMetadata, eventCutoff: Date?, result: inout AzureUsageScanResult) {
-        guard let lineReader = LineReader(url: fileURL) else {
-            return
-        }
-
-        var sessionID = Self.sessionID(for: fileURL, rootURL: rootURL)
-        var isTargetProviderSession = false
-        var didCountProviderSession = false
-        var currentModel: String?
-        var projectPath = AzureUsageRecord.unknownProject
-        var seenCumulativeUsages = Set<AzureTokenUsage>()
-        var eventIndex = 0
-        result.summary.sessionsScanned += 1
-
-        while let lineData = lineReader.nextLineData() {
-            guard !lineData.isEmpty else { continue }
-
-            if lineData.containsASCII(Self.sessionMetaBytes) {
-                guard let line = String(data: lineData, encoding: .utf8) else { continue }
-                if let id = Self.extractStringValue(named: "id", from: line), !id.isEmpty {
-                    sessionID = id
-                }
-                isTargetProviderSession = Self.extractStringValue(named: "model_provider", from: line) == provider.rawValue
-                if !isTargetProviderSession {
-                    break
-                }
-                projectPath = Self.extractProjectPath(from: line)
-                continue
-            }
-
-            if lineData.containsASCII(Self.turnContextBytes) {
-                guard isTargetProviderSession, let line = String(data: lineData, encoding: .utf8) else { continue }
-                if let model = Self.extractModel(from: line), !model.isEmpty {
-                    currentModel = model
-                }
-                continue
-            }
-
-            guard isTargetProviderSession,
-                  lineData.containsASCII(Self.tokenCountBytes),
-                  let line = String(data: lineData, encoding: .utf8)
-            else { continue }
-
-            guard let lastUsage = Self.extractTokenUsage(named: "last_token_usage", from: line, allowingMissingFields: false) else {
-                result.summary.malformedEventsSkipped += 1
-                continue
-            }
-
-            if let totalUsage = Self.extractTokenUsage(named: "total_token_usage", from: line, allowingMissingFields: false) {
-                if seenCumulativeUsages.contains(totalUsage) {
-                    result.summary.duplicateEventsSkipped += 1
-                    continue
-                }
-                seenCumulativeUsages.insert(totalUsage)
-            }
-
-            guard let timestamp = Self.date(from: Self.extractStringValue(named: "timestamp", from: line)) else {
-                result.summary.malformedEventsSkipped += 1
-                continue
-            }
-
-            eventIndex += 1
-            if let eventCutoff, timestamp <= eventCutoff {
-                continue
-            }
-            if !didCountProviderSession {
-                result.summary.providerSessions += 1
-                didCountProviderSession = true
-            }
-            let model = currentModel ?? Self.unknownModel
-            appendRecord(
-                sessionID: sessionID,
-                recordID: "\(sessionID)-\(eventIndex)",
-                fileURL: fileURL,
-                timestamp: timestamp,
-                metadata: metadata,
-                model: model,
-                usage: lastUsage,
-                projectPath: projectPath,
-                result: &result
-            )
-        }
-    }
-
-    private func scanOpenAISessions(
+    private func scanCodexLocalSessions(
         fileURLs: [URL],
+        metadata: AzureUsageDetectedMetadata,
         eventCutoff: Date?,
         result: inout AzureUsageScanResult,
         state: inout AzureUsageScanState
@@ -474,7 +375,7 @@ final class AzureUsageScanner {
         var sessions: [AzureUsageParsedSession] = []
         for fileURL in fileURLs {
             let rootURL = logRoots.first { fileURL.path.hasPrefix($0.path) }
-            if let session = parseOpenAIFile(fileURL: fileURL, rootURL: rootURL) {
+            if let session = parseCodexLocalFile(fileURL: fileURL, rootURL: rootURL) {
                 sessions.append(session)
             }
         }
@@ -489,17 +390,18 @@ final class AzureUsageScanner {
         result.summary.sessionsScanned = sessions.count
         result.summary.providerSessions = sessions.count
         for session in sessions {
-            processOpenAISession(session, eventCutoff: eventCutoff, result: &result, state: &state)
+            processCodexLocalSession(session, metadata: metadata, eventCutoff: eventCutoff, result: &result, state: &state)
         }
     }
 
-    private func parseOpenAIFile(fileURL: URL, rootURL: URL?) -> AzureUsageParsedSession? {
+    private func parseCodexLocalFile(fileURL: URL, rootURL: URL?) -> AzureUsageParsedSession? {
         let fileSessionID = Self.sessionID(for: fileURL, rootURL: rootURL)
         var sessionID = fileSessionID
         var metaTimestamp: Date?
         var forkedFromID: String?
         var projectPath = AzureUsageRecord.unknownProject
         var isTargetProviderSession = false
+        var didReadSessionMeta = false
         var currentModel: String?
         var parsedEvents: [AzureUsageParsedTokenEvent] = []
         var eventIndex = 0
@@ -509,9 +411,12 @@ final class AzureUsageScanner {
 
             if lineData.containsASCII(Self.sessionMetaBytes) {
                 guard let line = String(data: lineData, encoding: .utf8) else { return false }
+                guard !didReadSessionMeta else { return true }
+                didReadSessionMeta = true
                 let sessionProvider = Self.extractStringValue(named: "model_provider", from: line)
                 let originator = Self.extractStringValue(named: "originator", from: line)
-                isTargetProviderSession = sessionProvider == provider.rawValue && originator == "Codex Desktop"
+                isTargetProviderSession = sessionProvider == provider.rawValue
+                    && (provider != .openai || originator == "Codex Desktop")
                 guard isTargetProviderSession else { return false }
                 if let id = Self.extractStringValue(named: "id", from: line), !id.isEmpty {
                     sessionID = id
@@ -541,7 +446,7 @@ final class AzureUsageScanner {
             let totalUsage = Self.extractTokenUsage(named: "total_token_usage", from: line, allowingMissingFields: true)
             eventIndex += 1
             parsedEvents.append(AzureUsageParsedTokenEvent(
-                recordID: "\(fileSessionID)-\(eventIndex)",
+                recordID: "\(sessionID)-\(eventIndex)",
                 timestamp: timestamp,
                 model: currentModel ?? Self.unknownModel,
                 lastUsage: lastUsage,
@@ -575,29 +480,38 @@ final class AzureUsageScanner {
         )
     }
 
-    private func processOpenAISession(
+    private func processCodexLocalSession(
         _ session: AzureUsageParsedSession,
+        metadata: AzureUsageDetectedMetadata,
         eventCutoff: Date?,
         result: inout AzureUsageScanResult,
         state: inout AzureUsageScanState
     ) {
-        let replayCutoff = startupReplayCutoff(for: session)
-        for event in session.events {
+        let replayPrefixCount = startupReplayPrefixCount(for: session, state: state)
+        for (eventOffset, event) in session.events.enumerated() {
+            let sessionDedupeKey = event.totalUsage.map { "\(session.sessionID)|\($0.signature)" }
+            let replayKey = replayDedupeKey(for: event)
+
             if let eventCutoff, event.timestamp <= eventCutoff {
-                if let totalUsage = event.totalUsage {
-                    state.openAIDedupeKeys.insert("\(session.sessionID)|\(totalUsage.signature)")
+                if let sessionDedupeKey {
+                    state.codexLocalDedupeKeys.insert(sessionDedupeKey)
+                }
+                if let replayKey {
+                    state.codexLocalReplayKeys.insert(replayKey)
                 }
                 continue
             }
 
-            if let replayCutoff, event.timestamp <= replayCutoff {
+            if eventOffset < replayPrefixCount {
                 result.summary.startupReplayEventsSkipped += 1
+                if let replayKey {
+                    state.codexLocalReplayKeys.insert(replayKey)
+                }
                 continue
             }
 
-            if let totalUsage = event.totalUsage {
-                let dedupeKey = "\(session.sessionID)|\(totalUsage.signature)"
-                guard state.openAIDedupeKeys.insert(dedupeKey).inserted else {
+            if let sessionDedupeKey {
+                guard state.codexLocalDedupeKeys.insert(sessionDedupeKey).inserted else {
                     result.summary.duplicateEventsSkipped += 1
                     continue
                 }
@@ -608,20 +522,48 @@ final class AzureUsageScanner {
                 recordID: event.recordID,
                 fileURL: session.fileURL,
                 timestamp: event.timestamp,
-                metadata: AzureUsageDetectedMetadata(endpoint: "OpenAI", resource: "Codex local logs", deployment: nil, warnings: []),
+                metadata: metadata,
                 model: event.model,
                 usage: event.lastUsage,
                 projectPath: session.projectPath,
                 result: &result
             )
+
+            if let replayKey {
+                state.codexLocalReplayKeys.insert(replayKey)
+            }
         }
+    }
+
+    private func startupReplayPrefixCount(for session: AzureUsageParsedSession, state: AzureUsageScanState) -> Int {
+        guard session.forkedFromID?.isEmpty == false else {
+            return 0
+        }
+
+        var matchingPrefixCount = 0
+        for event in session.events {
+            guard let replayKey = replayDedupeKey(for: event),
+                  state.codexLocalReplayKeys.contains(replayKey)
+            else {
+                break
+            }
+            matchingPrefixCount += 1
+        }
+        if matchingPrefixCount > 0 {
+            return matchingPrefixCount
+        }
+
+        guard let replayCutoff = startupReplayCutoff(for: session) else {
+            return 0
+        }
+        return session.events.prefix { $0.timestamp <= replayCutoff }.count
     }
 
     private func startupReplayCutoff(for session: AzureUsageParsedSession) -> Date? {
         guard session.forkedFromID?.isEmpty == false, !session.events.isEmpty else {
             return nil
         }
-        let start = session.metaTimestamp ?? session.events.map(\.timestamp).min()
+        let start = session.events.map(\.timestamp).min()
         guard let start else { return nil }
         let burstEnd = start.addingTimeInterval(5)
         let burstEvents = session.events.filter { event in
@@ -629,6 +571,13 @@ final class AzureUsageScanner {
         }
         guard burstEvents.count >= 5 else { return nil }
         return burstEvents.map(\.timestamp).max()
+    }
+
+    private func replayDedupeKey(for event: AzureUsageParsedTokenEvent) -> String? {
+        guard let totalUsage = event.totalUsage else {
+            return nil
+        }
+        return "\(event.model)|\(totalUsage.signature)|\(event.lastUsage.signature)"
     }
 
     private func scanClaudeCodeSessions(
@@ -1184,7 +1133,8 @@ private struct AzureUsageProjectSessionAccumulator {
 }
 
 private struct AzureUsageScanState {
-    var openAIDedupeKeys = Set<String>()
+    var codexLocalDedupeKeys = Set<String>()
+    var codexLocalReplayKeys = Set<String>()
 }
 
 private struct AzureUsageParsedSession {
