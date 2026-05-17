@@ -5,8 +5,9 @@ struct AppPreferences {
         static let endpoint = "codexAccountTracker.endpoint"
         static let openAIAPIUsageWindow = "codexAccountTracker.openAIAPIUsageWindow"
         static let claudeCodeFoundryBackfillDone = "codexAccountTracker.claudeCodeFoundryBackfillDone"
-        static let openAICodexForkReplayBackfillDone = "codexAccountTracker.openAICodexForkReplayBackfillDone.v4"
-        static let azureCodexForkReplayBackfillDone = "codexAccountTracker.azureCodexForkReplayBackfillDone.v4"
+        static let claudeCodeProjectRootBackfillDone = "codexAccountTracker.claudeCodeProjectRootBackfillDone.v1"
+        static let openAICodexForkReplayBackfillDone = "codexAccountTracker.openAICodexForkReplayBackfillDone.v5"
+        static let azureCodexForkReplayBackfillDone = "codexAccountTracker.azureCodexForkReplayBackfillDone.v5"
     }
 
     static let privateEndpoint = "ws://127.0.0.1:14567"
@@ -41,17 +42,24 @@ struct AppPreferences {
         set { UserDefaults.standard.set(newValue, forKey: Keys.claudeCodeFoundryBackfillDone) }
     }
 
-    /// One-shot marker for scanner upgrades that changed local Codex fork replay
-    /// suppression. Existing cached rows need a full rebuild once so copied
-    /// pre-fork token rows are removed from OpenAI local usage.
+    /// One-shot marker for the Claude Code project-root attribution rebuild. Older
+    /// caches grouped rows by per-event cwd, splitting one session across subfolders.
+    static var claudeCodeProjectRootBackfillDone: Bool {
+        get { UserDefaults.standard.bool(forKey: Keys.claudeCodeProjectRootBackfillDone) }
+        set { UserDefaults.standard.set(newValue, forKey: Keys.claudeCodeProjectRootBackfillDone) }
+    }
+
+    /// One-shot marker for scanner upgrades that changed local Codex indexing or
+    /// fork replay suppression. Existing cached rows need a full rebuild once so
+    /// copied pre-fork token rows are removed from OpenAI local usage.
     static var openAICodexForkReplayBackfillDone: Bool {
         get { UserDefaults.standard.bool(forKey: Keys.openAICodexForkReplayBackfillDone) }
         set { UserDefaults.standard.set(newValue, forKey: Keys.openAICodexForkReplayBackfillDone) }
     }
 
-    /// One-shot marker for scanner upgrades that changed local Codex fork replay
-    /// suppression. Existing cached rows need a full rebuild once so copied
-    /// pre-fork token rows are removed from Azure local usage.
+    /// One-shot marker for scanner upgrades that changed local Codex indexing or
+    /// fork replay suppression. Existing cached rows need a full rebuild once so
+    /// copied pre-fork token rows are removed from Azure local usage.
     static var azureCodexForkReplayBackfillDone: Bool {
         get { UserDefaults.standard.bool(forKey: Keys.azureCodexForkReplayBackfillDone) }
         set { UserDefaults.standard.set(newValue, forKey: Keys.azureCodexForkReplayBackfillDone) }

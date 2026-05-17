@@ -332,6 +332,7 @@ final class AccountTrackerViewModel: ObservableObject {
             claudeCodeLastScannedAt = scannedAt
             usageCacheStore.save(claudeCodeScanResult, scannedAt: scannedAt)
             shouldRebuildClaudeCodeUsageCache = false
+            AppPreferences.claudeCodeProjectRootBackfillDone = true
             if needsFoundryBackfill {
                 AppPreferences.claudeCodeFoundryBackfillDone = true
             }
@@ -442,6 +443,7 @@ final class AccountTrackerViewModel: ObservableObject {
             claudeCodeScanResult = claudeCache.result
             claudeCodeLastScannedAt = claudeCache.scannedAt
             shouldRebuildClaudeCodeUsageCache = Self.needsClaudeCodeFullRebuild(claudeCache.result)
+                || !AppPreferences.claudeCodeProjectRootBackfillDone
         }
         desktopChatRecords = desktopChatStore.loadCachedRecords()
         rebuildClaudeCodeUsageDashboard()

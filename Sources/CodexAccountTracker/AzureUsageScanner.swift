@@ -5,17 +5,23 @@ final class AzureUsageScanner {
     private let logRoots: [URL]
     private let metadataURLs: [URL]
     private let provider: CodexLogUsageProvider
+    private let codexLocalUsageIndexStore: CodexLocalUsageIndexStore
+    private let claudeCodeUsageIndexStore: ClaudeCodeUsageIndexStore
 
     init(
         provider: CodexLogUsageProvider = .azure,
         fileManager: FileManager = .default,
         logRoots: [URL] = AzureUsageScanner.defaultLogRoots(),
-        metadataURLs: [URL] = AzureUsageScanner.defaultMetadataURLs()
+        metadataURLs: [URL] = AzureUsageScanner.defaultMetadataURLs(),
+        codexLocalUsageIndexStore: CodexLocalUsageIndexStore = CodexLocalUsageIndexStore(),
+        claudeCodeUsageIndexStore: ClaudeCodeUsageIndexStore = ClaudeCodeUsageIndexStore()
     ) {
         self.provider = provider
         self.fileManager = fileManager
         self.logRoots = logRoots
         self.metadataURLs = metadataURLs
+        self.codexLocalUsageIndexStore = codexLocalUsageIndexStore
+        self.claudeCodeUsageIndexStore = claudeCodeUsageIndexStore
     }
 
     func scan(since startDate: Date? = nil) -> AzureUsageScanResult {
@@ -377,12 +383,34 @@ final class AzureUsageScanner {
         result: inout AzureUsageScanResult,
         state: inout AzureUsageScanState
     ) {
-        var sessions: [AzureUsageParsedSession] = []
+        var index = codexLocalUsageIndexStore.load()
+        let currentPaths = Set(fileURLs.map(\.path))
+        var didChangeIndex = false
+        for cachedPath in Array(index.files.keys) where !currentPaths.contains(cachedPath) {
+            index.files.removeValue(forKey: cachedPath)
+            didChangeIndex = true
+        }
+
+        var sessions: [CodexLocalUsageIndexedSession] = []
         for fileURL in fileURLs {
+            guard let fingerprint = CodexLocalUsageFileFingerprint.make(fileURL: fileURL, fileManager: fileManager) else {
+                continue
+            }
+
+            if let cached = index.files[fileURL.path],
+               cached.fingerprint == fingerprint {
+                sessions.append(cached.session)
+                continue
+            }
+
             let rootURL = logRoots.first { fileURL.path.hasPrefix($0.path) }
             if let session = parseCodexLocalFile(fileURL: fileURL, rootURL: rootURL) {
+                index.files[fileURL.path] = CodexLocalUsageIndexedFile(fingerprint: fingerprint, session: session)
                 sessions.append(session)
+            } else {
+                index.files.removeValue(forKey: fileURL.path)
             }
+            didChangeIndex = true
         }
 
         sessions.sort { lhs, rhs in
@@ -401,9 +429,13 @@ final class AzureUsageScanner {
             }
             processCodexLocalSession(session, metadata: metadata, eventCutoff: eventCutoff, result: &result, state: &state)
         }
+
+        if didChangeIndex {
+            codexLocalUsageIndexStore.save(index)
+        }
     }
 
-    private func parseCodexLocalFile(fileURL: URL, rootURL: URL?) -> AzureUsageParsedSession? {
+    private func parseCodexLocalFile(fileURL: URL, rootURL: URL?) -> CodexLocalUsageIndexedSession? {
         let fileSessionID = Self.sessionID(for: fileURL, rootURL: rootURL)
         var sessionID = fileSessionID
         var metaTimestamp: Date?
@@ -414,7 +446,7 @@ final class AzureUsageScanner {
         var didReadCodexSessionMeta = false
         var didReadSessionMeta = false
         var currentModel: String?
-        var parsedEvents: [AzureUsageParsedTokenEvent] = []
+        var parsedEvents: [CodexLocalUsageIndexedEvent] = []
         var eventIndex = 0
 
         func consume(_ lineData: Data) -> Bool {
@@ -458,33 +490,28 @@ final class AzureUsageScanner {
 
             let totalUsage = Self.extractTokenUsage(named: "total_token_usage", from: line, allowingMissingFields: true)
             eventIndex += 1
-            parsedEvents.append(AzureUsageParsedTokenEvent(
+            let replayKey = totalUsage.map { Self.replayDedupeKey(model: currentModel ?? Self.unknownModel, totalUsage: $0, lastUsage: lastUsage) }
+            parsedEvents.append(CodexLocalUsageIndexedEvent(
                 recordID: "\(sessionID)-\(eventIndex)",
                 timestamp: timestamp,
                 model: currentModel ?? Self.unknownModel,
                 lastUsage: lastUsage,
-                totalUsage: totalUsage
+                replayKey: replayKey,
+                sessionDedupeKey: totalUsage.map { "\(sessionID)|\($0.signature)" }
             ))
             return true
         }
 
-        if let relevantLines = Self.filteredRelevantLineData(fileURL: fileURL) {
-            for lineData in relevantLines {
-                guard consume(lineData) else { return nil }
-            }
-        } else {
-            guard let lineReader = LineReader(url: fileURL) else {
-                return nil
-            }
-            while let lineData = lineReader.nextLineData() {
-                guard consume(lineData) else { return nil }
-            }
+        guard let relevantLines = Self.codexLocalRelevantLineData(fileURL: fileURL) else {
+            return nil
+        }
+        for lineData in relevantLines {
+            guard consume(lineData) else { return nil }
         }
 
         guard didReadSessionMeta else { return nil }
-        return AzureUsageParsedSession(
+        return CodexLocalUsageIndexedSession(
             filePath: fileURL.path,
-            fileURL: fileURL,
             sessionID: sessionID,
             provider: sessionProvider ?? "",
             originator: originator,
@@ -495,12 +522,12 @@ final class AzureUsageScanner {
         )
     }
 
-    private func isTargetCodexLocalSession(_ session: AzureUsageParsedSession) -> Bool {
+    private func isTargetCodexLocalSession(_ session: CodexLocalUsageIndexedSession) -> Bool {
         session.provider == provider.rawValue
             && (provider != .openai || session.originator == "Codex Desktop")
     }
 
-    private func seedCodexLocalReplayState(from session: AzureUsageParsedSession, state: inout AzureUsageScanState) {
+    private func seedCodexLocalReplayState(from session: CodexLocalUsageIndexedSession, state: inout AzureUsageScanState) {
         for event in session.events {
             guard let replayKey = replayDedupeKey(for: event) else { continue }
             state.codexLocalReplayKeys.insert(replayKey)
@@ -508,7 +535,7 @@ final class AzureUsageScanner {
     }
 
     private func processCodexLocalSession(
-        _ session: AzureUsageParsedSession,
+        _ session: CodexLocalUsageIndexedSession,
         metadata: AzureUsageDetectedMetadata,
         eventCutoff: Date?,
         result: inout AzureUsageScanResult,
@@ -517,8 +544,8 @@ final class AzureUsageScanner {
         let replayPrefixCount = startupReplayPrefixCount(for: session, state: state)
         let isForkedSession = session.forkedFromID?.isEmpty == false
         for (eventOffset, event) in session.events.enumerated() {
-            let sessionDedupeKey = event.totalUsage.map { "\(session.sessionID)|\($0.signature)" }
-            let replayKey = replayDedupeKey(for: event)
+            let sessionDedupeKey = event.sessionDedupeKey
+            let replayKey = event.replayKey
 
             if let eventCutoff, event.timestamp <= eventCutoff {
                 if let sessionDedupeKey {
@@ -565,7 +592,7 @@ final class AzureUsageScanner {
             appendRecord(
                 sessionID: session.sessionID,
                 recordID: event.recordID,
-                fileURL: session.fileURL,
+                fileURL: URL(fileURLWithPath: session.filePath),
                 timestamp: event.timestamp,
                 metadata: metadata,
                 model: event.model,
@@ -580,7 +607,7 @@ final class AzureUsageScanner {
         }
     }
 
-    private func startupReplayPrefixCount(for session: AzureUsageParsedSession, state: AzureUsageScanState) -> Int {
+    private func startupReplayPrefixCount(for session: CodexLocalUsageIndexedSession, state: AzureUsageScanState) -> Int {
         guard session.forkedFromID?.isEmpty == false else {
             return 0
         }
@@ -604,7 +631,7 @@ final class AzureUsageScanner {
         return session.events.prefix { $0.timestamp <= replayCutoff }.count
     }
 
-    private func startupReplayCutoff(for session: AzureUsageParsedSession) -> Date? {
+    private func startupReplayCutoff(for session: CodexLocalUsageIndexedSession) -> Date? {
         guard session.forkedFromID?.isEmpty == false, !session.events.isEmpty else {
             return nil
         }
@@ -618,11 +645,12 @@ final class AzureUsageScanner {
         return burstEvents.map(\.timestamp).max()
     }
 
-    private func replayDedupeKey(for event: AzureUsageParsedTokenEvent) -> String? {
-        guard let totalUsage = event.totalUsage else {
-            return nil
-        }
-        return "\(event.model)|\(totalUsage.signature)|\(event.lastUsage.signature)"
+    private func replayDedupeKey(for event: CodexLocalUsageIndexedEvent) -> String? {
+        event.replayKey
+    }
+
+    private static func replayDedupeKey(model: String, totalUsage: AzureTokenUsage, lastUsage: AzureTokenUsage) -> String {
+        "\(model)|\(totalUsage.signature)|\(lastUsage.signature)"
     }
 
     private func scanClaudeCodeSessions(
@@ -652,64 +680,53 @@ final class AzureUsageScanner {
         let foundryRootPaths = Self.claudeCodeFoundryRootPaths()
         var keyedRows: [String: AzureUsageParsedClaudeCodeEvent] = [:]
         var unkeyedRows: [AzureUsageParsedClaudeCodeEvent] = []
+        var index = claudeCodeUsageIndexStore.load()
+        var didChangeIndex = false
+
+        if eventCutoff == nil {
+            let currentPaths = Set(fileURLs.map(\.path))
+            for cachedPath in Array(index.files.keys) where !currentPaths.contains(cachedPath) {
+                index.files.removeValue(forKey: cachedPath)
+                didChangeIndex = true
+            }
+        }
 
         for fileURL in fileURLs {
-            let standardizedPath = fileURL.standardizedFileURL.path
-            let isFoundry = foundryRootPaths.contains { standardizedPath.hasPrefix($0) }
-            // Default metadata; per-event entrypoint can override for Foundry-dir files written
-            // by the macOS Claude desktop app's embedded Claude Code (entrypoint=claude-desktop).
-            let defaultMetadata = isFoundry ? foundryMetadata : anthropicMetadata
-            let sessionID = fileURL.deletingPathExtension().lastPathComponent
-            var sawAssistantLine = false
-            var didCountProviderSession = false
+            guard let fingerprint = CodexLocalUsageFileFingerprint.make(fileURL: fileURL, fileManager: fileManager) else {
+                continue
+            }
 
-            guard let lineReader = LineReader(url: fileURL) else { continue }
-            result.summary.sessionsScanned += 1
+            let indexedFile: ClaudeCodeUsageIndexedFile
+            if let cached = index.files[fileURL.path],
+               cached.fingerprint == fingerprint {
+                indexedFile = cached
+            } else if let parsed = parseClaudeCodeFile(
+                fileURL: fileURL,
+                fingerprint: fingerprint,
+                anthropicMetadata: anthropicMetadata,
+                foundryMetadata: foundryMetadata,
+                anthropicDesktopMetadata: anthropicDesktopMetadata,
+                foundryRootPaths: foundryRootPaths
+            ) {
+                index.files[fileURL.path] = parsed
+                indexedFile = parsed
+                didChangeIndex = true
+            } else {
+                index.files.removeValue(forKey: fileURL.path)
+                didChangeIndex = true
+                continue
+            }
+
+            if indexedFile.sawAssistantLine {
+                result.summary.sessionsScanned += 1
+            }
+            result.summary.malformedEventsSkipped += indexedFile.malformedEventsSkipped
             var fileKeyedRows: [String: AzureUsageParsedClaudeCodeEvent] = [:]
             var fileUnkeyedRows: [AzureUsageParsedClaudeCodeEvent] = []
+            var didCountProviderSession = false
 
-            while let lineData = lineReader.nextLineData() {
-                guard !lineData.isEmpty else { continue }
-                guard lineData.containsASCII(Self.assistantTypeBytes) else { continue }
-
-                guard let object = try? JSONSerialization.jsonObject(with: lineData) as? [String: Any],
-                      (object["type"] as? String) == "assistant",
-                      let message = object["message"] as? [String: Any],
-                      let usageDict = message["usage"] as? [String: Any]
-                else { continue }
-
-                sawAssistantLine = true
-
-                guard let messageID = message["id"] as? String, !messageID.isEmpty else {
-                    result.summary.malformedEventsSkipped += 1
-                    continue
-                }
-                let requestID = object["requestId"] as? String
-                let logSessionID = (object["sessionId"] as? String)
-                    ?? (object["session_id"] as? String)
-                    ?? ((object["metadata"] as? [String: Any])?["sessionId"] as? String)
-                    ?? ((message["metadata"] as? [String: Any])?["sessionId"] as? String)
-                    ?? sessionID
-
-                guard let timestamp = Self.date(from: object["timestamp"]) else {
-                    result.summary.malformedEventsSkipped += 1
-                    continue
-                }
-
-                let model = (object["model"] as? String)
-                    ?? (message["model"] as? String)
-                    ?? Self.unknownModel
-                if model == "<synthetic>" { continue }
-                let cwd = object["cwd"] as? String
-                let entrypoint = (object["entrypoint"] as? String) ?? ""
-                let metadata = (isFoundry && entrypoint == "claude-desktop")
-                    ? anthropicDesktopMetadata
-                    : defaultMetadata
-
-                let usage = Self.claudeCodeTokenUsage(from: usageDict)
-                if usage.isZero { continue }
-
-                if let eventCutoff, timestamp <= eventCutoff {
+            for indexedRow in indexedFile.rows {
+                if let eventCutoff, indexedRow.timestamp <= eventCutoff {
                     continue
                 }
 
@@ -718,19 +735,7 @@ final class AzureUsageScanner {
                     didCountProviderSession = true
                 }
 
-                let row = AzureUsageParsedClaudeCodeEvent(
-                    sessionID: logSessionID,
-                    fileURL: fileURL,
-                    timestamp: timestamp,
-                    metadata: metadata,
-                    model: model,
-                    usage: usage,
-                    projectPath: AzureUsageRecord.normalizedProjectPath(cwd),
-                    messageID: messageID,
-                    requestID: requestID,
-                    isSidechain: Self.boolValue(object["isSidechain"]),
-                    pathRole: fileURL.path.contains("/subagents/") ? .subagent : .parent
-                )
+                let row = parsedClaudeCodeEvent(from: indexedRow)
 
                 if let billingKey = row.billingKey {
                     // Streaming chunks share the same provider message/request identity inside
@@ -740,10 +745,6 @@ final class AzureUsageScanner {
                 } else {
                     fileUnkeyedRows.append(row)
                 }
-            }
-
-            if !sawAssistantLine {
-                result.summary.sessionsScanned -= 1
             }
 
             for row in fileKeyedRows.values {
@@ -761,6 +762,10 @@ final class AzureUsageScanner {
                 }
             }
             unkeyedRows.append(contentsOf: fileUnkeyedRows)
+        }
+
+        if didChangeIndex {
+            claudeCodeUsageIndexStore.save(index)
         }
 
         let rows = keyedRows.values.sorted { lhs, rhs in
@@ -781,6 +786,144 @@ final class AzureUsageScanner {
                 result: &result
             )
         }
+    }
+
+    private func parseClaudeCodeFile(
+        fileURL: URL,
+        fingerprint: CodexLocalUsageFileFingerprint,
+        anthropicMetadata: AzureUsageDetectedMetadata,
+        foundryMetadata: AzureUsageDetectedMetadata,
+        anthropicDesktopMetadata: AzureUsageDetectedMetadata,
+        foundryRootPaths: [String]
+    ) -> ClaudeCodeUsageIndexedFile? {
+        let standardizedPath = fileURL.standardizedFileURL.path
+        let isFoundry = foundryRootPaths.contains { standardizedPath.hasPrefix($0) }
+        let defaultMetadata = isFoundry ? foundryMetadata : anthropicMetadata
+        let sessionID = fileURL.deletingPathExtension().lastPathComponent
+        var sawAssistantLine = false
+        var malformedEventsSkipped = 0
+        var rows: [ClaudeCodeUsageIndexedRow] = []
+
+        guard let assistantLines = Self.claudeCodeAssistantLineData(fileURL: fileURL) else {
+            return nil
+        }
+
+        for lineData in assistantLines {
+            guard let object = try? JSONSerialization.jsonObject(with: lineData) as? [String: Any],
+                  (object["type"] as? String) == "assistant",
+                  let message = object["message"] as? [String: Any],
+                  let usageDict = message["usage"] as? [String: Any]
+            else { continue }
+
+            sawAssistantLine = true
+
+            guard let messageID = message["id"] as? String, !messageID.isEmpty else {
+                malformedEventsSkipped += 1
+                continue
+            }
+            let requestID = object["requestId"] as? String
+            let logSessionID = (object["sessionId"] as? String)
+                ?? (object["session_id"] as? String)
+                ?? ((object["metadata"] as? [String: Any])?["sessionId"] as? String)
+                ?? ((message["metadata"] as? [String: Any])?["sessionId"] as? String)
+                ?? sessionID
+
+            guard let timestamp = Self.date(from: object["timestamp"]) else {
+                malformedEventsSkipped += 1
+                continue
+            }
+
+            let model = (object["model"] as? String)
+                ?? (message["model"] as? String)
+                ?? Self.unknownModel
+            if model == "<synthetic>" { continue }
+
+            let usage = Self.claudeCodeTokenUsage(from: usageDict)
+            if usage.isZero { continue }
+
+            let entrypoint = (object["entrypoint"] as? String) ?? ""
+            let metadata = (isFoundry && entrypoint == "claude-desktop")
+                ? anthropicDesktopMetadata
+                : defaultMetadata
+
+            rows.append(ClaudeCodeUsageIndexedRow(
+                sessionID: logSessionID,
+                filePath: fileURL.path,
+                timestamp: timestamp,
+                endpoint: metadata.endpoint,
+                resource: metadata.resource,
+                deployment: metadata.deployment,
+                model: model,
+                usage: usage,
+                projectPath: Self.claudeCodeProjectPath(fileURL: fileURL, cwd: object["cwd"] as? String),
+                messageID: messageID,
+                requestID: requestID,
+                isSidechain: Self.boolValue(object["isSidechain"]),
+                isSubagent: fileURL.path.contains("/subagents/")
+            ))
+        }
+
+        return ClaudeCodeUsageIndexedFile(
+            fingerprint: fingerprint,
+            sawAssistantLine: sawAssistantLine,
+            malformedEventsSkipped: malformedEventsSkipped,
+            rows: rows
+        )
+    }
+
+    private func parsedClaudeCodeEvent(from row: ClaudeCodeUsageIndexedRow) -> AzureUsageParsedClaudeCodeEvent {
+        AzureUsageParsedClaudeCodeEvent(
+            sessionID: row.sessionID,
+            fileURL: URL(fileURLWithPath: row.filePath),
+            timestamp: row.timestamp,
+            metadata: AzureUsageDetectedMetadata(
+                endpoint: row.endpoint,
+                resource: row.resource,
+                deployment: row.deployment,
+                warnings: []
+            ),
+            model: row.model,
+            usage: row.usage,
+            projectPath: row.projectPath,
+            messageID: row.messageID,
+            requestID: row.requestID,
+            isSidechain: row.isSidechain,
+            pathRole: row.isSubagent ? .subagent : .parent
+        )
+    }
+
+    private static func claudeCodeProjectPath(fileURL: URL, cwd: String?) -> String {
+        let fallback = AzureUsageRecord.normalizedProjectPath(cwd)
+        guard let projectDirectoryName = claudeCodeProjectDirectoryName(for: fileURL) else {
+            return fallback
+        }
+
+        if let cwd, !cwd.isEmpty {
+            var candidate = URL(fileURLWithPath: cwd).standardizedFileURL
+            while candidate.path != "/" {
+                if claudeCodeEncodedProjectPath(candidate.path) == projectDirectoryName {
+                    return AzureUsageRecord.normalizedProjectPath(candidate.path)
+                }
+                candidate.deleteLastPathComponent()
+            }
+        }
+
+        return fallback
+    }
+
+    private static func claudeCodeProjectDirectoryName(for fileURL: URL) -> String? {
+        let standardizedPath = fileURL.standardizedFileURL.path
+        for root in defaultClaudeCodeLogRoots() {
+            let rootPath = root.standardizedFileURL.path + "/"
+            guard standardizedPath.hasPrefix(rootPath) else { continue }
+            let relativePath = String(standardizedPath.dropFirst(rootPath.count))
+            return relativePath.split(separator: "/").first.map(String.init)
+        }
+        return nil
+    }
+
+    private static func claudeCodeEncodedProjectPath(_ path: String) -> String {
+        path.replacingOccurrences(of: "/", with: "-")
     }
 
     private static func claudeCodeRowWins(candidate: AzureUsageParsedClaudeCodeEvent, existing: AzureUsageParsedClaudeCodeEvent) -> Bool {
@@ -921,42 +1064,72 @@ final class AzureUsageScanner {
         return object
     }
 
-    private static func filteredRelevantLineData(fileURL: URL) -> [Data]? {
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: "/usr/bin/grep")
-        process.arguments = [
-            "-aE",
-            "\"type\":\"session_meta\"|\"type\":\"turn_context\"|\"payload\":\\{\"type\":\"token_count\"",
-            fileURL.path
-        ]
-
-        let output = Pipe()
-        process.standardOutput = output
-        process.standardError = Pipe()
-
-        do {
-            try process.run()
-        } catch {
+    private static func codexLocalRelevantLineData(fileURL: URL) -> [Data]? {
+        guard let data = try? Data(contentsOf: fileURL, options: [.mappedIfSafe]) else {
             return nil
         }
 
-        let data = output.fileHandleForReading.readDataToEndOfFile()
-        process.waitUntilExit()
+        var lineRangesByStart: [Data.Index: Range<Data.Index>] = [:]
+        for pattern in codexLocalRelevantLinePatterns {
+            var searchRange = data.startIndex..<data.endIndex
+            while let match = data.range(of: pattern, options: [], in: searchRange) {
+                let lineStart: Data.Index
+                if let previousNewline = data[..<match.lowerBound].lastIndex(of: 0x0A) {
+                    lineStart = data.index(after: previousNewline)
+                } else {
+                    lineStart = data.startIndex
+                }
 
-        guard process.terminationStatus == 0 || process.terminationStatus == 1 else {
+                let lineEnd = data[match.upperBound..<data.endIndex].firstIndex(of: 0x0A) ?? data.endIndex
+                lineRangesByStart[lineStart] = lineStart..<lineEnd
+                searchRange = match.upperBound..<data.endIndex
+            }
+        }
+
+        return lineRangesByStart
+            .values
+            .sorted { $0.lowerBound < $1.lowerBound }
+            .map { range in
+                var line = Data(data[range])
+                if line.last == 0x0D {
+                    line.removeLast()
+                }
+                return line
+            }
+    }
+
+    private static func claudeCodeAssistantLineData(fileURL: URL) -> [Data]? {
+        guard let data = try? Data(contentsOf: fileURL, options: [.mappedIfSafe]) else {
             return nil
         }
-        guard !data.isEmpty else {
-            return []
-        }
 
-        return data.split(separator: 0x0A, omittingEmptySubsequences: false).map { slice in
-            var line = Data(slice)
+        var lines: [Data] = []
+        var searchRange = data.startIndex..<data.endIndex
+        let assistantPattern = Data(assistantTypeBytes)
+        let usagePattern = Data("\"usage\"".utf8)
+        while let match = data.range(of: assistantPattern, options: [], in: searchRange) {
+            let lineStart: Data.Index
+            if let previousNewline = data[..<match.lowerBound].lastIndex(of: 0x0A) {
+                lineStart = data.index(after: previousNewline)
+            } else {
+                lineStart = data.startIndex
+            }
+            let lineEnd = data[match.upperBound..<data.endIndex].firstIndex(of: 0x0A) ?? data.endIndex
+            searchRange = match.upperBound..<data.endIndex
+
+            let lineRange = lineStart..<lineEnd
+            guard data.range(of: usagePattern, options: [], in: lineRange) != nil else {
+                continue
+            }
+
+            var line = Data(data[lineRange])
             if line.last == 0x0D {
                 line.removeLast()
             }
-            return line
+            lines.append(line)
         }
+
+        return lines
     }
 
     private static func extractStringValue(named name: String, from line: String) -> String? {
@@ -1147,6 +1320,11 @@ final class AzureUsageScanner {
     private static let turnContextBytes = Array("\"turn_context\"".utf8)
     private static let tokenCountBytes = Array("\"token_count\"".utf8)
     private static let assistantTypeBytes = Array("\"type\":\"assistant\"".utf8)
+    private static let codexLocalRelevantLinePatterns = [
+        Data(sessionMetaBytes),
+        Data(turnContextBytes),
+        Data(tokenCountBytes)
+    ]
 }
 
 
@@ -1180,26 +1358,6 @@ private struct AzureUsageProjectSessionAccumulator {
 private struct AzureUsageScanState {
     var codexLocalDedupeKeys = Set<String>()
     var codexLocalReplayKeys = Set<String>()
-}
-
-private struct AzureUsageParsedSession {
-    var filePath: String
-    var fileURL: URL
-    var sessionID: String
-    var provider: String
-    var originator: String?
-    var metaTimestamp: Date?
-    var forkedFromID: String?
-    var projectPath: String
-    var events: [AzureUsageParsedTokenEvent]
-}
-
-private struct AzureUsageParsedTokenEvent {
-    var recordID: String
-    var timestamp: Date
-    var model: String
-    var lastUsage: AzureTokenUsage
-    var totalUsage: AzureTokenUsage?
 }
 
 private enum AzureUsageClaudeCodePathRole {
