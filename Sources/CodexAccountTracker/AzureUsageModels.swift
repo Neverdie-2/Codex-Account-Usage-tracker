@@ -1,11 +1,18 @@
 import Foundation
 
 enum AzureUsageTimeWindow: String, CaseIterable, Identifiable, Codable {
+    case last1Hour
+    case last3Hours
+    case last6Hours
+    case last12Hours
     case last24Hours
     case last3Days
     case last7Days
     case last14Days
     case last30Days
+    case last3Months
+    case last6Months
+    case last1Year
     case sinceDate
     case allTime
 
@@ -13,6 +20,14 @@ enum AzureUsageTimeWindow: String, CaseIterable, Identifiable, Codable {
 
     var label: String {
         switch self {
+        case .last1Hour:
+            return "Last 1h"
+        case .last3Hours:
+            return "Last 3h"
+        case .last6Hours:
+            return "Last 6h"
+        case .last12Hours:
+            return "Last 12h"
         case .last24Hours:
             return "Last 24h"
         case .last3Days:
@@ -23,6 +38,12 @@ enum AzureUsageTimeWindow: String, CaseIterable, Identifiable, Codable {
             return "Last 14d"
         case .last30Days:
             return "Last 30d"
+        case .last3Months:
+            return "Last 3mo"
+        case .last6Months:
+            return "Last 6mo"
+        case .last1Year:
+            return "Last 1y"
         case .sinceDate:
             return "Custom"
         case .allTime:
@@ -32,6 +53,14 @@ enum AzureUsageTimeWindow: String, CaseIterable, Identifiable, Codable {
 
     func startDate(now: Date, customStartDate: Date) -> Date? {
         switch self {
+        case .last1Hour:
+            return now.addingTimeInterval(-60 * 60)
+        case .last3Hours:
+            return now.addingTimeInterval(-3 * 60 * 60)
+        case .last6Hours:
+            return now.addingTimeInterval(-6 * 60 * 60)
+        case .last12Hours:
+            return now.addingTimeInterval(-12 * 60 * 60)
         case .last24Hours:
             return now.addingTimeInterval(-24 * 60 * 60)
         case .last3Days:
@@ -42,6 +71,12 @@ enum AzureUsageTimeWindow: String, CaseIterable, Identifiable, Codable {
             return now.addingTimeInterval(-14 * 24 * 60 * 60)
         case .last30Days:
             return now.addingTimeInterval(-30 * 24 * 60 * 60)
+        case .last3Months:
+            return now.addingTimeInterval(-90 * 24 * 60 * 60)
+        case .last6Months:
+            return now.addingTimeInterval(-180 * 24 * 60 * 60)
+        case .last1Year:
+            return now.addingTimeInterval(-365 * 24 * 60 * 60)
         case .sinceDate:
             return customStartDate
         case .allTime:
@@ -84,11 +119,18 @@ enum CodexLogUsageProvider: String, Equatable, Codable {
 }
 
 enum CodexUsageScanMode: String, CaseIterable, Identifiable, Codable {
+    case recent1Hour
+    case recent3Hours
+    case recent6Hours
+    case recent12Hours
     case recent24Hours
     case recent3Days
     case recent7Days
     case recent14Days
     case recent30Days
+    case recent3Months
+    case recent6Months
+    case recent1Year
     case sinceDate
     case allTime
 
@@ -96,11 +138,18 @@ enum CodexUsageScanMode: String, CaseIterable, Identifiable, Codable {
 
     var label: String {
         switch self {
+        case .recent1Hour: return "Last 1h"
+        case .recent3Hours: return "Last 3h"
+        case .recent6Hours: return "Last 6h"
+        case .recent12Hours: return "Last 12h"
         case .recent24Hours: return "Last 24h"
         case .recent3Days: return "Last 3d"
         case .recent7Days: return "Last 7d"
         case .recent14Days: return "Last 14d"
         case .recent30Days: return "Last 30d"
+        case .recent3Months: return "Last 3mo"
+        case .recent6Months: return "Last 6mo"
+        case .recent1Year: return "Last 1y"
         case .sinceDate: return "Custom"
         case .allTime: return "All time"
         }
@@ -108,6 +157,14 @@ enum CodexUsageScanMode: String, CaseIterable, Identifiable, Codable {
 
     func startDate(now: Date, customStartDate: Date) -> Date? {
         switch self {
+        case .recent1Hour:
+            return now.addingTimeInterval(-60 * 60)
+        case .recent3Hours:
+            return now.addingTimeInterval(-3 * 60 * 60)
+        case .recent6Hours:
+            return now.addingTimeInterval(-6 * 60 * 60)
+        case .recent12Hours:
+            return now.addingTimeInterval(-12 * 60 * 60)
         case .recent24Hours:
             return now.addingTimeInterval(-24 * 60 * 60)
         case .recent3Days:
@@ -118,6 +175,12 @@ enum CodexUsageScanMode: String, CaseIterable, Identifiable, Codable {
             return now.addingTimeInterval(-14 * 24 * 60 * 60)
         case .recent30Days:
             return now.addingTimeInterval(-30 * 24 * 60 * 60)
+        case .recent3Months:
+            return now.addingTimeInterval(-90 * 24 * 60 * 60)
+        case .recent6Months:
+            return now.addingTimeInterval(-180 * 24 * 60 * 60)
+        case .recent1Year:
+            return now.addingTimeInterval(-365 * 24 * 60 * 60)
         case .sinceDate:
             return customStartDate
         case .allTime:
@@ -131,11 +194,18 @@ enum CodexUsageScanMode: String, CaseIterable, Identifiable, Codable {
 
     var usageWindow: AzureUsageTimeWindow {
         switch self {
+        case .recent1Hour: return .last1Hour
+        case .recent3Hours: return .last3Hours
+        case .recent6Hours: return .last6Hours
+        case .recent12Hours: return .last12Hours
         case .recent24Hours: return .last24Hours
         case .recent3Days: return .last3Days
         case .recent7Days: return .last7Days
         case .recent14Days: return .last14Days
         case .recent30Days: return .last30Days
+        case .recent3Months: return .last3Months
+        case .recent6Months: return .last6Months
+        case .recent1Year: return .last1Year
         case .sinceDate: return .sinceDate
         case .allTime: return .allTime
         }

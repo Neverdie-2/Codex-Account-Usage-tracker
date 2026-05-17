@@ -1,28 +1,50 @@
 import Foundation
 
 enum OpenAIAPIUsageWindow: String, CaseIterable, Identifiable, Codable {
+    case last1Hour
+    case last3Hours
+    case last6Hours
+    case last12Hours
     case last24Hours
     case last3Days
     case last7Days
     case last14Days
     case last30Days
+    case last3Months
+    case last6Months
+    case last1Year
     case sinceDate
 
     var id: String { rawValue }
 
     var label: String {
         switch self {
+        case .last1Hour: return "Last 1h"
+        case .last3Hours: return "Last 3h"
+        case .last6Hours: return "Last 6h"
+        case .last12Hours: return "Last 12h"
         case .last24Hours: return "Last 24h"
         case .last3Days: return "Last 3d"
         case .last7Days: return "Last 7d"
         case .last14Days: return "Last 14d"
         case .last30Days: return "Last 30d"
+        case .last3Months: return "Last 3mo"
+        case .last6Months: return "Last 6mo"
+        case .last1Year: return "Last 1y"
         case .sinceDate: return "Custom"
         }
     }
 
     func startDate(now: Date, customStartDate: Date) -> Date {
         switch self {
+        case .last1Hour:
+            return now.addingTimeInterval(-60 * 60)
+        case .last3Hours:
+            return now.addingTimeInterval(-3 * 60 * 60)
+        case .last6Hours:
+            return now.addingTimeInterval(-6 * 60 * 60)
+        case .last12Hours:
+            return now.addingTimeInterval(-12 * 60 * 60)
         case .last24Hours:
             return now.addingTimeInterval(-24 * 60 * 60)
         case .last3Days:
@@ -33,6 +55,12 @@ enum OpenAIAPIUsageWindow: String, CaseIterable, Identifiable, Codable {
             return now.addingTimeInterval(-14 * 24 * 60 * 60)
         case .last30Days:
             return now.addingTimeInterval(-30 * 24 * 60 * 60)
+        case .last3Months:
+            return now.addingTimeInterval(-90 * 24 * 60 * 60)
+        case .last6Months:
+            return now.addingTimeInterval(-180 * 24 * 60 * 60)
+        case .last1Year:
+            return now.addingTimeInterval(-365 * 24 * 60 * 60)
         case .sinceDate:
             return customStartDate
         }
