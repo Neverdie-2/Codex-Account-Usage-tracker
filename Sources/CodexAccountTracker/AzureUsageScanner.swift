@@ -25,6 +25,10 @@ final class AzureUsageScanner {
     }
 
     func scan(since startDate: Date? = nil) -> AzureUsageScanResult {
+        // LM Studio usage comes from LMStudioConversationStore; this scanner has no
+        // LM Studio path. Fail loudly in debug if one is ever wired up by mistake —
+        // otherwise it would silently return an empty, plausible-looking result.
+        assert(provider != .lmStudio, "Use LMStudioConversationStore for LM Studio usage")
         let metadata: AzureUsageDetectedMetadata
         switch provider {
         case .azure:

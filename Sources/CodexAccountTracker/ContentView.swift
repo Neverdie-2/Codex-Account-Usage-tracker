@@ -637,6 +637,7 @@ private struct LMStudioUsageSectionView: View {
             customStartDate: $viewModel.lmStudioCustomStartDate,
             sessionCounterLabel: CodexLogUsageProvider.lmStudio.sessionCounterLabel,
             costLabel: CodexLogUsageProvider.lmStudio.costLabel,
+            costColumnTitle: "\(CodexLogUsageProvider.lmStudio.costShortLabel) $",
             endpointTableTitle: "By model",
             emptyText: "No LM Studio generations counted yet. Chat with a local model and click Refresh.",
             endpointLabel: { group in
@@ -658,6 +659,7 @@ private struct CodexLogUsageSectionView: View {
     var scanMode: Binding<CodexUsageScanMode>?
     let sessionCounterLabel: String
     let costLabel: String
+    let costColumnTitle: String
     let endpointTableTitle: String
     let emptyText: String
     let endpointLabel: (AzureUsageGroup) -> String
@@ -673,6 +675,7 @@ private struct CodexLogUsageSectionView: View {
         customStartDate: Binding<Date>,
         sessionCounterLabel: String,
         costLabel: String = "Est. cost",
+        costColumnTitle: String = "Est. $",
         endpointTableTitle: String,
         emptyText: String = "No token events counted for this window",
         endpointLabel: @escaping (AzureUsageGroup) -> String,
@@ -688,6 +691,7 @@ private struct CodexLogUsageSectionView: View {
         self.scanMode = nil
         self.sessionCounterLabel = sessionCounterLabel
         self.costLabel = costLabel
+        self.costColumnTitle = costColumnTitle
         self.endpointTableTitle = endpointTableTitle
         self.emptyText = emptyText
         self.endpointLabel = endpointLabel
@@ -704,6 +708,7 @@ private struct CodexLogUsageSectionView: View {
         customStartDate: Binding<Date>,
         sessionCounterLabel: String,
         costLabel: String = "Est. cost",
+        costColumnTitle: String = "Est. $",
         endpointTableTitle: String,
         emptyText: String,
         endpointLabel: @escaping (AzureUsageGroup) -> String,
@@ -719,6 +724,7 @@ private struct CodexLogUsageSectionView: View {
         self.scanMode = scanMode
         self.sessionCounterLabel = sessionCounterLabel
         self.costLabel = costLabel
+        self.costColumnTitle = costColumnTitle
         self.endpointTableTitle = endpointTableTitle
         self.emptyText = emptyText
         self.endpointLabel = endpointLabel
@@ -798,6 +804,7 @@ private struct CodexLogUsageSectionView: View {
                     title: endpointTableTitle,
                     groups: dashboard.byEndpointDeployment,
                     emptyText: emptyText,
+                    costColumnTitle: costColumnTitle,
                     label: endpointLabel
                 )
 
@@ -805,6 +812,7 @@ private struct CodexLogUsageSectionView: View {
                     title: "By model",
                     groups: dashboard.byModel,
                     emptyText: emptyText,
+                    costColumnTitle: costColumnTitle,
                     label: { group in
                         "\(group.model) • \(group.pricing.rateSummary)"
                     }
@@ -813,7 +821,8 @@ private struct CodexLogUsageSectionView: View {
 
             AzureUsageProjectTableView(
                 projects: dashboard.byProject,
-                emptyText: emptyText
+                emptyText: emptyText,
+                costColumnTitle: costColumnTitle
             )
 
             Divider()
@@ -942,17 +951,20 @@ private struct AzureUsageTableView: View {
     let title: String
     let groups: [AzureUsageGroup]
     let emptyText: String
+    let costColumnTitle: String
     let label: (AzureUsageGroup) -> String
 
     init(
         title: String,
         groups: [AzureUsageGroup],
         emptyText: String = "No token events counted for this window",
+        costColumnTitle: String = "Est. $",
         label: @escaping (AzureUsageGroup) -> String
     ) {
         self.title = title
         self.groups = groups
         self.emptyText = emptyText
+        self.costColumnTitle = costColumnTitle
         self.label = label
     }
 
@@ -968,7 +980,7 @@ private struct AzureUsageTableView: View {
                     .frame(maxWidth: .infinity, minHeight: 72, alignment: .center)
             } else {
                 VStack(spacing: 0) {
-                    AzureUsageHeaderRow()
+                    AzureUsageHeaderRow(costColumnTitle: costColumnTitle)
                     ForEach(groups.prefix(8)) { group in
                         AzureUsageRow(title: label(group), totals: group.totals)
                         if group.id != groups.prefix(8).last?.id {
@@ -986,6 +998,8 @@ private struct AzureUsageTableView: View {
 }
 
 private struct AzureUsageHeaderRow: View {
+    var costColumnTitle = "Est. $"
+
     var body: some View {
         HStack(spacing: 8) {
             Text("Name")
@@ -1002,7 +1016,7 @@ private struct AzureUsageHeaderRow: View {
                 .frame(width: AzureUsageColumnWidth.output, alignment: .trailing)
             Text("Total")
                 .frame(width: AzureUsageColumnWidth.total, alignment: .trailing)
-            Text("Est. $")
+            Text(costColumnTitle)
                 .frame(width: AzureUsageColumnWidth.cost, alignment: .trailing)
         }
         .font(AzureUsageLowerFont.captionSemibold)
@@ -1066,6 +1080,7 @@ private struct AzureUsageRow: View {
 private struct AzureUsageProjectTableView: View {
     let projects: [AzureUsageProjectGroup]
     let emptyText: String
+    var costColumnTitle = "Est. $"
 
     private var folderProjects: [AzureUsageProjectGroup] {
         projects.filter { !$0.isChatGroup }
@@ -1085,6 +1100,7 @@ private struct AzureUsageProjectTableView: View {
                     firstColumnTitle: "Project",
                     projects: folderProjects,
                     emptyText: emptyText,
+                    costColumnTitle: costColumnTitle,
                     showsFooterDivider: hasChats
                 )
 
@@ -1107,6 +1123,7 @@ private struct AzureUsageProjectGroupSectionView: View {
     let firstColumnTitle: String
     let projects: [AzureUsageProjectGroup]
     let emptyText: String
+    var costColumnTitle = "Est. $"
     var showsFooterDivider = false
 
     var body: some View {
@@ -1121,7 +1138,7 @@ private struct AzureUsageProjectGroupSectionView: View {
                     .frame(maxWidth: .infinity, minHeight: 72, alignment: .center)
             } else {
                 VStack(spacing: 0) {
-                    AzureUsageProjectHeaderRow(firstColumnTitle: firstColumnTitle)
+                    AzureUsageProjectHeaderRow(firstColumnTitle: firstColumnTitle, costColumnTitle: costColumnTitle)
                     ForEach(projects.prefix(12)) { project in
                         if project.id == projects.prefix(12).first?.id {
                             Divider()
@@ -1168,6 +1185,7 @@ private struct AzureUsageProjectRowsView: View {
 
 private struct AzureUsageProjectHeaderRow: View {
     let firstColumnTitle: String
+    var costColumnTitle = "Est. $"
 
     var body: some View {
         HStack(spacing: 8) {
@@ -1179,7 +1197,7 @@ private struct AzureUsageProjectHeaderRow: View {
                 .frame(width: AzureUsageColumnWidth.projectEvents, alignment: .trailing)
             Text("Total")
                 .frame(width: AzureUsageColumnWidth.projectTotal, alignment: .trailing)
-            Text("Est. $")
+            Text(costColumnTitle)
                 .frame(width: AzureUsageColumnWidth.projectCost, alignment: .trailing)
             Text("Latest")
                 .frame(width: AzureUsageColumnWidth.latest, alignment: .trailing)

@@ -143,17 +143,53 @@ final class LMStudioConversationStoreTests: XCTestCase {
             .write(to: dir.appendingPathComponent("999.conversation.json"))
         try Data("{}".utf8)
             .write(to: dir.appendingPathComponent("ignored.txt"))
+        // LM Studio stores sidebar folders as subdirectories — foldered chats must count.
+        let subdir = dir.appendingPathComponent("My Folder", isDirectory: true)
+        try FileManager.default.createDirectory(at: subdir, withIntermediateDirectories: true)
+        try Data(Self.fixtureJSON.utf8)
+            .write(to: subdir.appendingPathComponent("555.conversation.json"))
 
         let result = LMStudioConversationStore(conversationsDirectoryURL: dir).scan()
 
-        XCTAssertEqual(result.summary.filesScanned, 2, "only *.conversation.json files count")
-        XCTAssertEqual(result.records.count, 2)
-        XCTAssertEqual(result.summary.sessionsScanned, 1)
-        XCTAssertEqual(result.summary.eventsCounted, 2)
+        XCTAssertEqual(result.summary.filesScanned, 3, "only *.conversation.json files count, including subfolders")
+        XCTAssertEqual(result.records.count, 4)
+        XCTAssertEqual(result.summary.sessionsScanned, 2)
+        XCTAssertEqual(result.summary.eventsCounted, 4)
         XCTAssertEqual(result.summary.malformedEventsSkipped, 1)
         XCTAssertEqual(result.summary.warnings.count, 1)
         XCTAssertTrue(result.summary.warnings[0].contains("999.conversation.json"))
+        XCTAssertTrue(result.records.contains { $0.sessionID == "555" }, "sub-foldered chat must be scanned")
         XCTAssertEqual(result.summary.earliestEvent?.timeIntervalSince1970 ?? 0, 1780959836.856, accuracy: 0.001)
         XCTAssertEqual(result.summary.latestEvent?.timeIntervalSince1970 ?? 0, 1780959837.238, accuracy: 0.001)
+    }
+
+    func testImplausibleStepIdentifierFallsBackToCreatedAtOrSkips() throws {
+        func conversation(createdAt: Any?) -> [String: Any] {
+            var conv: [String: Any] = [
+                "messages": [
+                    ["versions": [["role": "assistant", "steps": [[
+                        "type": "contentBlock",
+                        "stepIdentifier": "5-abc", // numeric prefix, but not a plausible epoch
+                        "genInfo": ["stats": ["promptTokensCount": 10, "predictedTokensCount": 20]]
+                    ]]]]]
+                ]
+            ]
+            if let createdAt { conv["createdAt"] = createdAt }
+            return conv
+        }
+
+        let withCreatedAt = LMStudioConversationStore.records(
+            fromConversation: conversation(createdAt: 1780959551824),
+            filePath: "/tmp/z.conversation.json"
+        )
+        XCTAssertEqual(withCreatedAt.count, 1)
+        XCTAssertEqual(withCreatedAt[0].timestamp.timeIntervalSince1970, 1780959551.824, accuracy: 0.001,
+                       "implausible step id must fall back to conversation createdAt, not ~1970")
+
+        let withoutCreatedAt = LMStudioConversationStore.records(
+            fromConversation: conversation(createdAt: nil),
+            filePath: "/tmp/z.conversation.json"
+        )
+        XCTAssertTrue(withoutCreatedAt.isEmpty, "undateable records are skipped, not dated 1970")
     }
 }

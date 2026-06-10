@@ -201,6 +201,7 @@ final class AccountTrackerViewModel: ObservableObject {
             lastScannedAt: lmStudioLastScannedAt,
             sessionCounterLabel: CodexLogUsageProvider.lmStudio.sessionCounterLabel,
             costLabel: CodexLogUsageProvider.lmStudio.costLabel,
+            costShortLabel: CodexLogUsageProvider.lmStudio.costShortLabel,
             to: &lines
         )
         lines.append("")
@@ -544,6 +545,7 @@ final class AccountTrackerViewModel: ObservableObject {
         lastScannedAt: Date?,
         sessionCounterLabel: String,
         costLabel: String = "Est. cost",
+        costShortLabel: String = "Est.",
         to lines: inout [String]
     ) {
         lines.append(title)
@@ -559,14 +561,14 @@ final class AccountTrackerViewModel: ObservableObject {
         lines.append("By provider / model deployment")
         for group in dashboard.byEndpointDeployment.prefix(8) {
             lines.append("  \(group.endpoint) | \(group.resource) | \(group.deployment)")
-            appendTokenTotals(group.totals, to: &lines)
+            appendTokenTotals(group.totals, costShortLabel: costShortLabel, to: &lines)
         }
 
         lines.append("")
         lines.append("By model")
         for group in dashboard.byModel.prefix(8) {
             lines.append("  \(group.model) - \(group.pricing.rateSummary)")
-            appendTokenTotals(group.totals, to: &lines)
+            appendTokenTotals(group.totals, costShortLabel: costShortLabel, to: &lines)
         }
 
         lines.append("")
@@ -576,18 +578,18 @@ final class AccountTrackerViewModel: ObservableObject {
             if !project.isChatGroup {
                 lines.append("  \(project.projectPath)")
             }
-            lines.append("  Sessions \(formatInteger(project.sessionCount)) | Events \(formatInteger(project.totals.eventCount)) | Total \(formatInteger(project.totals.totalTokens)) | Est. \(formatUSD(project.totals.estimatedCostUSD)) | Latest \(DateFormats.display(date: project.latestActivity))")
+            lines.append("  Sessions \(formatInteger(project.sessionCount)) | Events \(formatInteger(project.totals.eventCount)) | Total \(formatInteger(project.totals.totalTokens)) | \(costShortLabel) \(formatUSD(project.totals.estimatedCostUSD)) | Latest \(DateFormats.display(date: project.latestActivity))")
             if !project.byModel.isEmpty {
                 lines.append("  Models")
                 for model in project.byModel.prefix(8) {
                     lines.append("    \(model.model) - \(model.pricing.rateSummary)")
-                    appendTokenTotals(model.totals, indent: "    ", to: &lines)
+                    appendTokenTotals(model.totals, indent: "    ", costShortLabel: costShortLabel, to: &lines)
                 }
             }
             if !project.sessions.isEmpty {
                 lines.append("  Sessions")
                 for session in project.sessions.prefix(12) {
-                    lines.append("    \(session.shortSessionID) \(session.modelSummary) | Events \(formatInteger(session.totals.eventCount)) | Total \(formatInteger(session.totals.totalTokens)) | Est. \(formatUSD(session.totals.estimatedCostUSD)) | Latest \(DateFormats.display(date: session.latestActivity)) | \(session.sourceFileName)")
+                    lines.append("    \(session.shortSessionID) \(session.modelSummary) | Events \(formatInteger(session.totals.eventCount)) | Total \(formatInteger(session.totals.totalTokens)) | \(costShortLabel) \(formatUSD(session.totals.estimatedCostUSD)) | Latest \(DateFormats.display(date: session.latestActivity)) | \(session.sourceFileName)")
                 }
             }
         }
@@ -610,8 +612,8 @@ final class AccountTrackerViewModel: ObservableObject {
         }
     }
 
-    private func appendTokenTotals(_ totals: AzureUsageTokenTotals, indent: String = "    ", to lines: inout [String]) {
-        lines.append("\(indent)Events \(formatInteger(totals.eventCount)) | Input \(formatInteger(totals.inputTokens)) | Output \(formatInteger(totals.outputTokens)) | Total \(formatInteger(totals.totalTokens)) | Est. \(formatUSD(totals.estimatedCostUSD))")
+    private func appendTokenTotals(_ totals: AzureUsageTokenTotals, indent: String = "    ", costShortLabel: String = "Est.", to lines: inout [String]) {
+        lines.append("\(indent)Events \(formatInteger(totals.eventCount)) | Input \(formatInteger(totals.inputTokens)) | Output \(formatInteger(totals.outputTokens)) | Total \(formatInteger(totals.totalTokens)) | \(costShortLabel) \(formatUSD(totals.estimatedCostUSD))")
     }
 
     private func appendOpenAIAPIBillingDashboard(to lines: inout [String]) {

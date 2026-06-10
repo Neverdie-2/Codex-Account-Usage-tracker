@@ -20,16 +20,21 @@ final class LMStudioConversationStore {
 
     func scan() -> AzureUsageScanResult {
         var result = AzureUsageScanResult(provider: .lmStudio)
-        guard let entries = try? fileManager.contentsOfDirectory(
+        // Deep enumeration: LM Studio stores sidebar folders as subdirectories,
+        // so foldered chats live below the top level. Missing directory (LM Studio
+        // not installed / no chats yet) yields no entries — empty, no warnings.
+        guard let enumerator = fileManager.enumerator(
             at: conversationsDirectoryURL,
-            includingPropertiesForKeys: nil
+            includingPropertiesForKeys: nil,
+            options: [.skipsHiddenFiles]
         ) else {
-            return result // LM Studio not installed or no chats yet — empty, no warnings.
+            return result
         }
 
-        let conversationFiles = entries
+        let conversationFiles = enumerator
+            .compactMap { $0 as? URL }
             .filter { $0.lastPathComponent.hasSuffix(".conversation.json") }
-            .sorted { $0.lastPathComponent < $1.lastPathComponent }
+            .sorted { $0.path < $1.path }
         result.summary.filesScanned = conversationFiles.count
 
         for fileURL in conversationFiles {
@@ -68,7 +73,8 @@ final class LMStudioConversationStore {
             .replacingOccurrences(of: ".conversation.json", with: "")
         let fallbackModel = ((conversation["lastUsedModel"] as? [String: Any])?["identifier"] as? String)
             ?? unknownModel
-        let conversationCreatedAt = (conversation["createdAt"] as? Double).map { Date(timeIntervalSince1970: $0 / 1000) }
+        let conversationCreatedAt = (conversation["createdAt"] as? NSNumber)
+            .map { Date(timeIntervalSince1970: $0.doubleValue / 1000) }
         guard let messages = conversation["messages"] as? [[String: Any]] else { return [] }
 
         var records: [AzureUsageRecord] = []
@@ -81,17 +87,21 @@ final class LMStudioConversationStore {
                     guard let genInfo = step["genInfo"] as? [String: Any],
                           let stats = genInfo["stats"] as? [String: Any] else { continue }
 
-                    let promptTokens = (stats["promptTokensCount"] as? Int) ?? 0
-                    let predictedTokens = (stats["predictedTokensCount"] as? Int) ?? 0
+                    // NSNumber bridging: `as? Int` fails on non-integral numbers,
+                    // so go through intValue to survive float-ish serialization.
+                    let promptTokens = (stats["promptTokensCount"] as? NSNumber)?.intValue ?? 0
+                    let predictedTokens = (stats["predictedTokensCount"] as? NSNumber)?.intValue ?? 0
                     guard promptTokens > 0 || predictedTokens > 0 else { continue }
-                    let totalTokens = (stats["totalTokensCount"] as? Int) ?? (promptTokens + predictedTokens)
+                    let totalTokens = (stats["totalTokensCount"] as? NSNumber)?.intValue ?? (promptTokens + predictedTokens)
 
                     let model = (genInfo["identifier"] as? String) ?? fallbackModel
                     let stepIdentifier = (step["stepIdentifier"] as? String)
                         ?? "index-\(records.count)"
-                    let timestamp = Self.timestamp(fromStepIdentifier: stepIdentifier)
+                    // A record with no real date would be invisible in every relative
+                    // time window while still skewing "earliest event" — skip instead.
+                    guard let timestamp = Self.timestamp(fromStepIdentifier: stepIdentifier)
                         ?? conversationCreatedAt
-                        ?? Date(timeIntervalSince1970: 0)
+                    else { continue }
 
                     let usage = AzureTokenUsage(
                         inputTokens: promptTokens,
@@ -124,7 +134,10 @@ final class LMStudioConversationStore {
     /// a dash, then a random fraction.
     private static func timestamp(fromStepIdentifier stepIdentifier: String) -> Date? {
         guard let prefix = stepIdentifier.split(separator: "-").first,
-              let epochMs = Double(prefix), epochMs > 0
+              let epochMs = Double(prefix),
+              // Plausible epoch-ms only (≥ Sep 2001); anything smaller is not a
+              // real LM Studio step id and would date the record near 1970.
+              epochMs >= 1_000_000_000_000
         else { return nil }
         return Date(timeIntervalSince1970: epochMs / 1000)
     }

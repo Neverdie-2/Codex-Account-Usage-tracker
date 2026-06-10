@@ -119,6 +119,14 @@ enum CodexLogUsageProvider: String, Equatable, Codable {
         }
     }
 
+    /// Compact form of `costLabel` for table column headers and report rows.
+    var costShortLabel: String {
+        switch self {
+        case .azure, .openai, .claudeCode: return "Est."
+        case .lmStudio: return "Saved"
+        }
+    }
+
     var unknownEndpointWarning: String {
         switch self {
         case .azure:
@@ -339,15 +347,12 @@ struct AzureModelPricing: Equatable, Codable {
             .replacingOccurrences(of: ".", with: "-")
 
         if provider == .lmStudio {
-            return AzureModelPricing(
-                modelPattern: "lm-studio-local",
-                displayName: "Local model (Sonnet 4.6 reference rates)",
-                inputPerMillionUSD: 3.00,
-                cachedInputPerMillionUSD: 0.30,
-                cacheWritePerMillionUSD: 3.75,
-                outputPerMillionUSD: 15.00,
-                isKnown: true
-            )
+            // Savings reference = current Sonnet rates; delegate so the numbers
+            // live in one place (the sonnet branch below).
+            var pricing = defaultPricing(for: "claude-sonnet-reference", provider: .claudeCode)
+            pricing.modelPattern = "lm-studio-local"
+            pricing.displayName = "Local model (Sonnet 4.6 reference rates)"
+            return pricing
         }
 
         if provider == .claudeCode || normalized.contains("claude-") {
@@ -719,7 +724,9 @@ struct AzureUsageProjectGroup: Equatable, Identifiable, Codable {
     var sessions: [AzureUsageProjectSessionGroup]
 
     var isChatGroup: Bool {
-        projectPath == AzureUsageRecord.unknownProject || projectPath == AzureUsageRecord.chatProject
+        projectPath == AzureUsageRecord.unknownProject
+            || projectPath == AzureUsageRecord.chatProject
+            || projectPath == LMStudioConversationStore.chatProject
     }
 }
 
