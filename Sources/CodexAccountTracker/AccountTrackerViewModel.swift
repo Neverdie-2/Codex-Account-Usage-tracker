@@ -14,14 +14,17 @@ final class AccountTrackerViewModel: ObservableObject {
     @Published private(set) var azureUsage = AzureUsageDashboard.empty
     @Published private(set) var openAIUsage = AzureUsageDashboard.empty
     @Published private(set) var claudeCodeUsage = AzureUsageDashboard.empty
+    @Published private(set) var lmStudioUsage = AzureUsageDashboard.empty
     @Published private(set) var openAIAPIBilling = OpenAIAPIBillingDashboard.empty
     @Published private(set) var isAzureRefreshing = false
     @Published private(set) var isOpenAIRefreshing = false
     @Published private(set) var isClaudeCodeRefreshing = false
+    @Published private(set) var isLMStudioRefreshing = false
     @Published private(set) var isOpenAIAPIBillingRefreshing = false
     @Published private(set) var azureLastScannedAt: Date?
     @Published private(set) var openAILastScannedAt: Date?
     @Published private(set) var claudeCodeLastScannedAt: Date?
+    @Published private(set) var lmStudioLastScannedAt: Date?
     @Published private(set) var openAIAPIBillingLastScannedAt: Date?
     @Published var openAIAdminKey: String {
         didSet {
@@ -62,6 +65,18 @@ final class AccountTrackerViewModel: ObservableObject {
         didSet {
             if claudeCodeUsageScanMode == .sinceDate {
                 rebuildClaudeCodeUsageDashboard()
+            }
+        }
+    }
+    @Published var lmStudioUsageScanMode: CodexUsageScanMode = .recent24Hours {
+        didSet {
+            rebuildLMStudioUsageDashboard()
+        }
+    }
+    @Published var lmStudioCustomStartDate: Date = Calendar.current.date(byAdding: .day, value: -7, to: Date()) ?? Date() {
+        didSet {
+            if lmStudioUsageScanMode == .sinceDate {
+                rebuildLMStudioUsageDashboard()
             }
         }
     }
@@ -106,6 +121,8 @@ final class AccountTrackerViewModel: ObservableObject {
     private var claudeCodeScanResult = AzureUsageScanResult(provider: .claudeCode)
     private let desktopChatStore = ClaudeDesktopChatStore()
     private var desktopChatRecords: [AzureUsageRecord] = []
+    private let lmStudioConversationStore = LMStudioConversationStore()
+    private var lmStudioScanResult = AzureUsageScanResult(provider: .lmStudio)
     private var openAIAPIBillingResult = OpenAIAPIBillingResult.empty
     private var refreshTask: Task<Void, Never>?
     private var displayClockTask: Task<Void, Never>?
@@ -178,6 +195,16 @@ final class AccountTrackerViewModel: ObservableObject {
         )
         lines.append("")
         appendUsageDashboard(
+            lmStudioUsage,
+            title: "LM Studio Usage",
+            windowLabel: lmStudioUsageScanMode.label,
+            lastScannedAt: lmStudioLastScannedAt,
+            sessionCounterLabel: CodexLogUsageProvider.lmStudio.sessionCounterLabel,
+            costLabel: CodexLogUsageProvider.lmStudio.costLabel,
+            to: &lines
+        )
+        lines.append("")
+        appendUsageDashboard(
             azureUsage,
             title: "Azure Usage",
             windowLabel: azureUsageWindow.label,
@@ -222,6 +249,8 @@ final class AccountTrackerViewModel: ObservableObject {
         if shouldRebuildClaudeCodeUsageCache {
             refreshClaudeCodeUsage()
         }
+        // LM Studio rescans are cheap (a handful of JSON files) — always refresh on launch.
+        refreshLMStudioUsage()
         await startLiveMonitoring()
     }
 
@@ -340,6 +369,27 @@ final class AccountTrackerViewModel: ObservableObject {
         }
     }
 
+    func refreshLMStudioUsage() {
+        guard !isLMStudioRefreshing else { return }
+        isLMStudioRefreshing = true
+
+        Task { [weak self, lmStudioConversationStore, usageCacheStore] in
+            // Conversation files are few and small; a full rescan each time keeps
+            // dedupe trivial (the result wholesale-replaces the previous one).
+            let result = await Task.detached(priority: .utility) {
+                lmStudioConversationStore.scan()
+            }.value
+
+            guard let self else { return }
+            defer { isLMStudioRefreshing = false }
+            let scannedAt = Date()
+            lmStudioScanResult = result
+            lmStudioLastScannedAt = scannedAt
+            usageCacheStore.save(lmStudioScanResult, scannedAt: scannedAt)
+            rebuildLMStudioUsageDashboard()
+        }
+    }
+
     func refreshOpenAIAPIBilling() {
         guard !isOpenAIAPIBillingRefreshing else { return }
         isOpenAIAPIBillingRefreshing = true
@@ -448,6 +498,12 @@ final class AccountTrackerViewModel: ObservableObject {
         desktopChatRecords = desktopChatStore.loadCachedRecords()
         rebuildClaudeCodeUsageDashboard()
 
+        if let lmStudioCache = usageCacheStore.load(provider: .lmStudio) {
+            lmStudioScanResult = lmStudioCache.result
+            lmStudioLastScannedAt = lmStudioCache.scannedAt
+            rebuildLMStudioUsageDashboard()
+        }
+
         if let apiBillingCache = openAIAPIBillingCacheStore.load() {
             openAIAPIBillingResult = apiBillingCache.result
             openAIAPIBillingLastScannedAt = apiBillingCache.scannedAt
@@ -487,6 +543,7 @@ final class AccountTrackerViewModel: ObservableObject {
         windowLabel: String,
         lastScannedAt: Date?,
         sessionCounterLabel: String,
+        costLabel: String = "Est. cost",
         to lines: inout [String]
     ) {
         lines.append(title)
@@ -496,7 +553,7 @@ final class AccountTrackerViewModel: ObservableObject {
         lines.append("Uncached \(formatInteger(dashboard.totals.uncachedInputTokens))")
         lines.append("Output \(formatInteger(dashboard.totals.outputTokens))")
         lines.append("Total \(formatInteger(dashboard.totals.totalTokens))")
-        lines.append("Est. cost \(formatUSD(dashboard.totals.estimatedCostUSD))")
+        lines.append("\(costLabel) \(formatUSD(dashboard.totals.estimatedCostUSD))")
 
         lines.append("")
         lines.append("By provider / model deployment")
@@ -650,6 +707,15 @@ final class AccountTrackerViewModel: ObservableObject {
             from: combined,
             window: claudeCodeUsageScanMode.usageWindow,
             customStartDate: claudeCodeCustomStartDate,
+            now: displayNow
+        )
+    }
+
+    private func rebuildLMStudioUsageDashboard() {
+        lmStudioUsage = AzureUsageScanner.dashboard(
+            from: lmStudioScanResult,
+            window: lmStudioUsageScanMode.usageWindow,
+            customStartDate: lmStudioCustomStartDate,
             now: displayNow
         )
     }
