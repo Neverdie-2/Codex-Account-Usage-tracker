@@ -120,4 +120,40 @@ final class LMStudioConversationStoreTests: XCTestCase {
         let records = LMStudioConversationStore.records(fromConversation: conversation, filePath: "/tmp/y.conversation.json")
         XCTAssertTrue(records.isEmpty)
     }
+
+    func testScanMissingDirectoryReturnsEmptyWithoutWarnings() {
+        let store = LMStudioConversationStore(
+            conversationsDirectoryURL: URL(fileURLWithPath: "/nonexistent/\(UUID().uuidString)")
+        )
+        let result = store.scan()
+        XCTAssertEqual(result.provider, .lmStudio)
+        XCTAssertTrue(result.records.isEmpty)
+        XCTAssertTrue(result.summary.warnings.isEmpty)
+    }
+
+    func testScanSkipsMalformedFileWithWarningAndKeepsGoodFile() throws {
+        let dir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("lmstudio-test-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+
+        try Data(Self.fixtureJSON.utf8)
+            .write(to: dir.appendingPathComponent("1780959551823.conversation.json"))
+        try Data("{not json".utf8)
+            .write(to: dir.appendingPathComponent("999.conversation.json"))
+        try Data("{}".utf8)
+            .write(to: dir.appendingPathComponent("ignored.txt"))
+
+        let result = LMStudioConversationStore(conversationsDirectoryURL: dir).scan()
+
+        XCTAssertEqual(result.summary.filesScanned, 2, "only *.conversation.json files count")
+        XCTAssertEqual(result.records.count, 2)
+        XCTAssertEqual(result.summary.sessionsScanned, 1)
+        XCTAssertEqual(result.summary.eventsCounted, 2)
+        XCTAssertEqual(result.summary.malformedEventsSkipped, 1)
+        XCTAssertEqual(result.summary.warnings.count, 1)
+        XCTAssertTrue(result.summary.warnings[0].contains("999.conversation.json"))
+        XCTAssertEqual(result.summary.earliestEvent?.timeIntervalSince1970 ?? 0, 1780959836.856, accuracy: 0.001)
+        XCTAssertEqual(result.summary.latestEvent?.timeIntervalSince1970 ?? 0, 1780959837.238, accuracy: 0.001)
+    }
 }
