@@ -326,6 +326,17 @@ struct AzureModelPricing: Equatable, Codable {
             .replacingOccurrences(of: ".", with: "-")
 
         if provider == .claudeCode || normalized.contains("claude-") {
+            if normalized.contains("fable") {
+                return AzureModelPricing(
+                    modelPattern: "claude-fable-5",
+                    displayName: "Claude Fable 5",
+                    inputPerMillionUSD: 10.00,
+                    cachedInputPerMillionUSD: 1.00,
+                    cacheWritePerMillionUSD: 12.50,
+                    outputPerMillionUSD: 50.00,
+                    isKnown: true
+                )
+            }
             if normalized.contains("opus") {
                 let isLegacyOpus = normalized.contains("opus-4-1") || normalized == "claude-opus-4"
                 if isLegacyOpus {
