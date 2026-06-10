@@ -122,6 +122,7 @@ final class AccountTrackerViewModel: ObservableObject {
     private let desktopChatStore = ClaudeDesktopChatStore()
     private var desktopChatRecords: [AzureUsageRecord] = []
     private let lmStudioConversationStore = LMStudioConversationStore()
+    private let opencodeUsageStore = OpencodeUsageStore()
     private var lmStudioScanResult = AzureUsageScanResult(provider: .lmStudio)
     private var openAIAPIBillingResult = OpenAIAPIBillingResult.empty
     private var refreshTask: Task<Void, Never>?
@@ -374,17 +375,20 @@ final class AccountTrackerViewModel: ObservableObject {
         guard !isLMStudioRefreshing else { return }
         isLMStudioRefreshing = true
 
-        Task { [weak self, lmStudioConversationStore, usageCacheStore] in
-            // Conversation files are few and small; a full rescan each time keeps
-            // dedupe trivial (the result wholesale-replaces the previous one).
-            let result = await Task.detached(priority: .utility) {
-                lmStudioConversationStore.scan()
+        Task { [weak self, lmStudioConversationStore, opencodeUsageStore, usageCacheStore] in
+            // "LM Studio usage" = all usage of LM-Studio-served models, across
+            // clients: the chat app (conversation files) and opencode (its SQLite
+            // db, providerID == lmstudio). Both sources are cheap to rescan, so a
+            // full rescan each time keeps dedupe trivial (record IDs are disjoint:
+            // lm-studio-* vs opencode-*, so the merge just concatenates).
+            let scans = await Task.detached(priority: .utility) {
+                (conversations: lmStudioConversationStore.scan(), opencode: opencodeUsageStore.scan())
             }.value
 
             guard let self else { return }
             defer { isLMStudioRefreshing = false }
             let scannedAt = Date()
-            lmStudioScanResult = result
+            lmStudioScanResult = Self.mergedUsageResult(scans.conversations, with: scans.opencode)
             lmStudioLastScannedAt = scannedAt
             usageCacheStore.save(lmStudioScanResult, scannedAt: scannedAt)
             rebuildLMStudioUsageDashboard()
