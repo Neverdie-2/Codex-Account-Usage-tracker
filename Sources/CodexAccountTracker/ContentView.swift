@@ -16,6 +16,7 @@ struct ContentView: View {
                         AzureUsageSectionView()
                         OpenAIUsageSectionView()
                         ClaudeCodeUsageSectionView()
+                        LMStudioUsageSectionView()
                     }
                     .padding(20)
                 }
@@ -40,6 +41,7 @@ struct ContentView: View {
                         AzureUsageSectionView()
                         OpenAIUsageSectionView()
                         ClaudeCodeUsageSectionView()
+                        LMStudioUsageSectionView()
                     }
                     .padding(20)
                 }
@@ -621,6 +623,30 @@ private struct ClaudeCodeUsageSectionView: View {
     }
 }
 
+private struct LMStudioUsageSectionView: View {
+    @EnvironmentObject private var viewModel: AccountTrackerViewModel
+
+    var body: some View {
+        CodexLogUsageSectionView(
+            title: "LM Studio Usage",
+            subtitle: "Local chats from ~/.lmstudio/conversations — free to run; savings vs Sonnet 4.6 cloud rates",
+            dashboard: viewModel.lmStudioUsage,
+            isRefreshing: viewModel.isLMStudioRefreshing,
+            lastScannedAt: viewModel.lmStudioLastScannedAt,
+            scanMode: $viewModel.lmStudioUsageScanMode,
+            customStartDate: $viewModel.lmStudioCustomStartDate,
+            sessionCounterLabel: CodexLogUsageProvider.lmStudio.sessionCounterLabel,
+            costLabel: CodexLogUsageProvider.lmStudio.costLabel,
+            endpointTableTitle: "By model",
+            emptyText: "No LM Studio generations counted yet. Chat with a local model and click Refresh.",
+            endpointLabel: { group in
+                "\(group.endpoint) • \(group.deployment)"
+            },
+            refresh: viewModel.refreshLMStudioUsage
+        )
+    }
+}
+
 private struct CodexLogUsageSectionView: View {
     let title: String
     let subtitle: String
@@ -631,6 +657,7 @@ private struct CodexLogUsageSectionView: View {
     var customStartDate: Binding<Date>?
     var scanMode: Binding<CodexUsageScanMode>?
     let sessionCounterLabel: String
+    let costLabel: String
     let endpointTableTitle: String
     let emptyText: String
     let endpointLabel: (AzureUsageGroup) -> String
@@ -645,6 +672,7 @@ private struct CodexLogUsageSectionView: View {
         window: Binding<AzureUsageTimeWindow>,
         customStartDate: Binding<Date>,
         sessionCounterLabel: String,
+        costLabel: String = "Est. cost",
         endpointTableTitle: String,
         emptyText: String = "No token events counted for this window",
         endpointLabel: @escaping (AzureUsageGroup) -> String,
@@ -659,6 +687,7 @@ private struct CodexLogUsageSectionView: View {
         self.customStartDate = customStartDate
         self.scanMode = nil
         self.sessionCounterLabel = sessionCounterLabel
+        self.costLabel = costLabel
         self.endpointTableTitle = endpointTableTitle
         self.emptyText = emptyText
         self.endpointLabel = endpointLabel
@@ -674,6 +703,7 @@ private struct CodexLogUsageSectionView: View {
         scanMode: Binding<CodexUsageScanMode>,
         customStartDate: Binding<Date>,
         sessionCounterLabel: String,
+        costLabel: String = "Est. cost",
         endpointTableTitle: String,
         emptyText: String,
         endpointLabel: @escaping (AzureUsageGroup) -> String,
@@ -688,6 +718,7 @@ private struct CodexLogUsageSectionView: View {
         self.customStartDate = customStartDate
         self.scanMode = scanMode
         self.sessionCounterLabel = sessionCounterLabel
+        self.costLabel = costLabel
         self.endpointTableTitle = endpointTableTitle
         self.emptyText = emptyText
         self.endpointLabel = endpointLabel
@@ -759,7 +790,7 @@ private struct CodexLogUsageSectionView: View {
                 AzureUsageTotalPanel(title: "Uncached", value: dashboard.totals.uncachedInputTokens)
                 AzureUsageTotalPanel(title: "Output", value: dashboard.totals.outputTokens)
                 AzureUsageTotalPanel(title: "Total", value: dashboard.totals.totalTokens)
-                AzureUsageCostPanel(title: "Est. cost", value: dashboard.totals.estimatedCostUSD)
+                AzureUsageCostPanel(title: costLabel, value: dashboard.totals.estimatedCostUSD)
             }
 
             HStack(alignment: .top, spacing: 12) {
