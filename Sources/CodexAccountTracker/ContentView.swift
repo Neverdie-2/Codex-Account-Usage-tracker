@@ -629,7 +629,7 @@ private struct LMStudioUsageSectionView: View {
     var body: some View {
         CodexLogUsageSectionView(
             title: "LM Studio Usage",
-            subtitle: "Local LM Studio model usage — chat app + opencode — free to run; savings vs Sonnet 4.6 cloud rates",
+            subtitle: "Local LM Studio model usage — chat app + opencode — free to run; savings vs each model's base Qwen API rate",
             dashboard: viewModel.lmStudioUsage,
             isRefreshing: viewModel.isLMStudioRefreshing,
             lastScannedAt: viewModel.lmStudioLastScannedAt,

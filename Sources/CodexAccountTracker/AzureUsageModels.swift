@@ -347,12 +347,52 @@ struct AzureModelPricing: Equatable, Codable {
             .replacingOccurrences(of: ".", with: "-")
 
         if provider == .lmStudio {
-            // Savings reference = current Sonnet rates; delegate so the numbers
-            // live in one place (the sonnet branch below).
-            var pricing = defaultPricing(for: "claude-sonnet-reference", provider: .claudeCode)
-            pricing.modelPattern = "lm-studio-local"
-            pricing.displayName = "Local model (Sonnet 4.6 reference rates)"
-            return pricing
+            // These are community fine-tunes with no API pricing of their own.
+            // Estimate savings against the OpenRouter list price of the base
+            // model each is derived from. Models with no API equivalent are left
+            // unknown ($0) rather than guessed.
+            if normalized.contains("30b-a3b") {
+                return AzureModelPricing(
+                    modelPattern: "qwen3-30b-a3b-2507",
+                    displayName: "Qwen3-30B-A3B-2507 API reference",
+                    inputPerMillionUSD: 0.0482,
+                    cachedInputPerMillionUSD: 0.0048,
+                    cacheWritePerMillionUSD: 0.0482,
+                    outputPerMillionUSD: 0.1931,
+                    isKnown: true
+                )
+            }
+            if normalized.contains("35b-a3b") {
+                return AzureModelPricing(
+                    modelPattern: "qwen3.6-35b-a3b",
+                    displayName: "Qwen3.6 35B A3B API reference",
+                    inputPerMillionUSD: 0.14,
+                    cachedInputPerMillionUSD: 0.014,
+                    cacheWritePerMillionUSD: 0.14,
+                    outputPerMillionUSD: 1.00,
+                    isKnown: true
+                )
+            }
+            if normalized.contains("27b") {
+                return AzureModelPricing(
+                    modelPattern: "qwen3.6-27b",
+                    displayName: "Qwen3.6 27B API reference",
+                    inputPerMillionUSD: 0.289,
+                    cachedInputPerMillionUSD: 0.029,
+                    cacheWritePerMillionUSD: 0.289,
+                    outputPerMillionUSD: 2.40,
+                    isKnown: true
+                )
+            }
+            return AzureModelPricing(
+                modelPattern: "lm-studio-local",
+                displayName: "Local model (no API equivalent)",
+                inputPerMillionUSD: 0,
+                cachedInputPerMillionUSD: 0,
+                cacheWritePerMillionUSD: nil,
+                outputPerMillionUSD: 0,
+                isKnown: false
+            )
         }
 
         if provider == .claudeCode || normalized.contains("claude-") {
