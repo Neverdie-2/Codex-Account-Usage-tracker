@@ -89,12 +89,14 @@ enum CodexLogUsageProvider: String, Equatable, Codable {
     case azure
     case openai
     case claudeCode = "claude-code"
+    case lmStudio = "lm-studio"
 
     var displayName: String {
         switch self {
         case .azure: return "Azure"
         case .openai: return "Codex"
         case .claudeCode: return "Claude Code"
+        case .lmStudio: return "LM Studio"
         }
     }
 
@@ -103,6 +105,17 @@ enum CodexLogUsageProvider: String, Equatable, Codable {
         case .azure: return "Azure sessions"
         case .openai: return "Codex sessions"
         case .claudeCode: return "Claude Code sessions"
+        case .lmStudio: return "LM Studio chats"
+        }
+    }
+
+    /// Title for the money column. Local models cost nothing to run, so the
+    /// LM Studio dashboard shows what the same tokens would have cost on a
+    /// cloud model instead of an actual spend.
+    var costLabel: String {
+        switch self {
+        case .azure, .openai, .claudeCode: return "Est. cost"
+        case .lmStudio: return "Est. saved"
         }
     }
 
@@ -112,7 +125,7 @@ enum CodexLogUsageProvider: String, Equatable, Codable {
             return "Azure endpoint/resource could not be reliably discovered from local logs or safe config metadata; grouped as unknown endpoint."
         case .openai:
             return "OpenAI Codex usage excludes Azure sessions; Azure usage remains in the separate Azure dashboard."
-        case .claudeCode:
+        case .claudeCode, .lmStudio:
             return ""
         }
     }
@@ -324,6 +337,18 @@ struct AzureModelPricing: Equatable, Codable {
         let normalized = (model ?? "").lowercased()
             .replacingOccurrences(of: "_", with: "-")
             .replacingOccurrences(of: ".", with: "-")
+
+        if provider == .lmStudio {
+            return AzureModelPricing(
+                modelPattern: "lm-studio-local",
+                displayName: "Local model (Sonnet 4.6 reference rates)",
+                inputPerMillionUSD: 3.00,
+                cachedInputPerMillionUSD: 0.30,
+                cacheWritePerMillionUSD: 3.75,
+                outputPerMillionUSD: 15.00,
+                isKnown: true
+            )
+        }
 
         if provider == .claudeCode || normalized.contains("claude-") {
             if normalized.contains("fable") {

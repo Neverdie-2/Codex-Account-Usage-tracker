@@ -33,6 +33,9 @@ final class AzureUsageScanner {
             metadata = AzureUsageDetectedMetadata(endpoint: "OpenAI", resource: "Codex local logs", deployment: nil, warnings: [])
         case .claudeCode:
             metadata = AzureUsageDetectedMetadata(endpoint: "Anthropic", resource: "Claude Code transcripts", deployment: nil, warnings: [])
+        case .lmStudio:
+            // LM Studio usage is produced by LMStudioConversationStore, not this scanner.
+            metadata = AzureUsageDetectedMetadata(endpoint: "LM Studio", resource: "Local chats", deployment: nil, warnings: [])
         }
         var result = AzureUsageScanResult(provider: provider)
         var state = AzureUsageScanState()
@@ -42,6 +45,8 @@ final class AzureUsageScanner {
             jsonlFileURLs()
         case .claudeCode:
             jsonlFileURLs(since: startDate)
+        case .lmStudio:
+            [URL]()
         }
         result.summary.filesScanned = fileURLs.count
 
@@ -50,6 +55,8 @@ final class AzureUsageScanner {
             scanCodexLocalSessions(fileURLs: fileURLs, metadata: metadata, eventCutoff: startDate, result: &result, state: &state)
         case .claudeCode:
             scanClaudeCodeSessions(fileURLs: fileURLs, eventCutoff: startDate, result: &result, state: &state)
+        case .lmStudio:
+            break
         }
 
         if result.records.contains(where: { $0.endpoint == AzureUsageScanner.unknownEndpoint }) {
@@ -986,6 +993,10 @@ final class AzureUsageScanner {
         case .claudeCode:
             endpoint = metadata.endpoint ?? "Anthropic"
             resource = metadata.resource ?? "Claude Code transcripts"
+        case .lmStudio:
+            // Unreachable: the scanner never emits LM Studio records (see scan()).
+            endpoint = metadata.endpoint ?? "LM Studio"
+            resource = metadata.resource ?? "Local chats"
         }
         let deployment = model == Self.unknownModel ? (metadata.deployment ?? Self.unknownDeployment) : model
         let record = AzureUsageRecord(

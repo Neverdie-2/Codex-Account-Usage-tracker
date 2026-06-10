@@ -13,6 +13,11 @@ let package = Package(
         .executableTarget(
             name: "CodexAccountTracker",
             path: "Sources/CodexAccountTracker"
+        ),
+        .testTarget(
+            name: "CodexAccountTrackerTests",
+            dependencies: ["CodexAccountTracker"],
+            path: "Tests/CodexAccountTrackerTests"
         )
     ]
 )
