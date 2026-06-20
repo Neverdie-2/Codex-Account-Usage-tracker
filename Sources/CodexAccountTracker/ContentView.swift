@@ -658,7 +658,7 @@ private struct CursorUsageSectionView: View {
     var body: some View {
         CodexLogUsageSectionView(
             title: "Cursor Usage",
-            subtitle: "Local Cursor conversations (state.vscdb) — est. API-equivalent cost from Cursor's logged tokens (logged sparsely, so a lower bound)",
+            subtitle: "Local Cursor conversations (state.vscdb) — input = peak context, output summed; est. API cost. Cursor only logs tokens for premium-model turns, so untracked sessions show $0.",
             dashboard: viewModel.cursorUsage,
             isRefreshing: viewModel.isCursorUsageRefreshing,
             lastScannedAt: viewModel.cursorUsageLastScannedAt,

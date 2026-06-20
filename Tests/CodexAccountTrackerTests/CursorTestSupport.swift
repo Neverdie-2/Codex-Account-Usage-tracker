@@ -117,9 +117,14 @@ func makeSampleStateDB() -> URL {
     insert(into: "cursorDiskKV",
            key: "bubbleId:11111111-2222-3333-4444-555555555555:b3",
            value: "{\"type\":1,\"text\":\"now tests\",\"modelInfo\":{\"modelName\":\"claude-4.5-opus-high-thinking\"},\"createdAt\":\"2026-06-20T08:10:00.000Z\",\"tokenCount\":{\"inputTokens\":0,\"outputTokens\":0}}")
+    // Two assistant turns whose inputTokens are CUMULATIVE context (800k then 1M);
+    // the conversation's input is the peak (1M, not the 1.8M sum). Output is per-turn.
     insert(into: "cursorDiskKV",
            key: "bubbleId:11111111-2222-3333-4444-555555555555:b4",
-           value: "{\"type\":2,\"text\":\"\",\"modelInfo\":null,\"createdAt\":\"2026-06-20T08:11:00.000Z\",\"tokenCount\":{\"inputTokens\":1000000,\"outputTokens\":200000}}")
+           value: "{\"type\":2,\"text\":\"\",\"modelInfo\":null,\"createdAt\":\"2026-06-20T08:11:00.000Z\",\"tokenCount\":{\"inputTokens\":800000,\"outputTokens\":120000}}")
+    insert(into: "cursorDiskKV",
+           key: "bubbleId:11111111-2222-3333-4444-555555555555:b5",
+           value: "{\"type\":2,\"text\":\"\",\"modelInfo\":null,\"createdAt\":\"2026-06-20T08:12:00.000Z\",\"tokenCount\":{\"inputTokens\":1000000,\"outputTokens\":80000}}")
     // Prefix-colliding ORPHAN decoy (composerId ...555555555555X has no
     // composerData/header) — must NOT leak into composer 1111… or fabricate a row.
     insert(into: "cursorDiskKV",

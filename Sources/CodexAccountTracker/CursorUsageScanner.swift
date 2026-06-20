@@ -74,14 +74,18 @@ final class CursorUsageScanner {
             let headerUpdatedAt = Self.msEpochDate(header?["lastUpdatedAt"])
             var conversationLatest = Self.maxDate(headerUpdatedAt, composerCreatedAt)
 
-            // Accumulate tokens per attributed model.
+            // Accumulate tokens per attributed model. Cursor logs `inputTokens` as
+            // the CUMULATIVE context at each assistant turn (it grows turn over
+            // turn), so the conversation's input is the PEAK value — summing it
+            // would re-count the re-sent context many times. `outputTokens` is
+            // per-turn, so it is summed.
             var perModel: [String: ModelAccumulator] = [:]
             var modelOrder: [String] = []
             for bubble in bubbles {
                 let model = (bubble.modelName?.isEmpty == false) ? bubble.modelName! : primaryModel
                 if perModel[model] == nil { modelOrder.append(model) }
                 var accumulator = perModel[model] ?? ModelAccumulator()
-                accumulator.inputTokens += bubble.inputTokens
+                accumulator.inputTokens = Swift.max(accumulator.inputTokens, bubble.inputTokens)
                 accumulator.outputTokens += bubble.outputTokens
                 if let date = CursorAccountRecord.parseISO8601(bubble.createdAt) {
                     accumulator.latest = Self.maxDate(accumulator.latest, date)
