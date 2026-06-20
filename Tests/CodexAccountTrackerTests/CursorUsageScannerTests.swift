@@ -41,9 +41,10 @@ final class CursorUsageScannerTests: XCTestCase {
         let result = scanner.scan()
         let aRecords = result.records.filter { $0.sessionID == composerA }
         let claude = try XCTUnwrap(aRecords.first { $0.model == "claude-4.5-opus-high-thinking" })
-        XCTAssertEqual(claude.usage.inputTokens, 1_000_000)
+        // Peak input = max(tokenCount.inputTokens 1.0M, contextWindowStatus.tokensUsed 1.5M).
+        XCTAssertEqual(claude.usage.inputTokens, 1_500_000)
         XCTAssertEqual(claude.usage.outputTokens, 200_000)
-        XCTAssertEqual(claude.usage.totalTokens, 1_200_000)
+        XCTAssertEqual(claude.usage.totalTokens, 1_700_000)
         XCTAssertEqual(claude.endpoint, "Cursor")
         XCTAssertEqual(claude.resource, "agent")
     }
@@ -67,9 +68,9 @@ final class CursorUsageScannerTests: XCTestCase {
         let now = CursorAccountRecord.parseISO8601("2026-06-21T00:00:00Z")!
         let dashboard = AzureUsageScanner.dashboard(from: result, window: .allTime, customStartDate: now, now: now)
 
-        XCTAssertEqual(dashboard.totals.totalTokens, 1_200_000)
-        // claude-opus-4.5+ preset: $5/M input, $25/M output → 5 + 5 = $10.
-        XCTAssertEqual(dashboard.totals.estimatedCostUSD, 10.0, accuracy: 0.001)
+        XCTAssertEqual(dashboard.totals.totalTokens, 1_700_000)
+        // claude-opus-4.5+ preset: $5/M input, $25/M output → 1.5M*5 + 0.2M*25 = 7.5 + 5 = $12.50.
+        XCTAssertEqual(dashboard.totals.estimatedCostUSD, 12.5, accuracy: 0.001)
         XCTAssertTrue(dashboard.byModel.contains { $0.model == "claude-4.5-opus-high-thinking" })
 
         let project = try XCTUnwrap(dashboard.byProject.first { $0.projectName == "MyProject" })

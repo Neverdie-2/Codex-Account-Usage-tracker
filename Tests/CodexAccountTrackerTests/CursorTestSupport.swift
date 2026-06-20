@@ -125,6 +125,11 @@ func makeSampleStateDB() -> URL {
     insert(into: "cursorDiskKV",
            key: "bubbleId:11111111-2222-3333-4444-555555555555:b5",
            value: "{\"type\":2,\"text\":\"\",\"modelInfo\":null,\"createdAt\":\"2026-06-20T08:12:00.000Z\",\"tokenCount\":{\"inputTokens\":1000000,\"outputTokens\":80000}}")
+    // A turn whose only token signal is the context-window status (tokenCount is 0);
+    // its tokensUsed (1.5M) is the conversation's true peak context.
+    insert(into: "cursorDiskKV",
+           key: "bubbleId:11111111-2222-3333-4444-555555555555:b6",
+           value: "{\"type\":1,\"text\":\"more\",\"modelInfo\":{\"modelName\":\"claude-4.5-opus-high-thinking\"},\"createdAt\":\"2026-06-20T08:13:00.000Z\",\"tokenCount\":{\"inputTokens\":0,\"outputTokens\":0},\"contextWindowStatusAtCreation\":{\"tokensUsed\":1500000,\"tokenLimit\":2000000}}")
     // Prefix-colliding ORPHAN decoy (composerId ...555555555555X has no
     // composerData/header) — must NOT leak into composer 1111… or fabricate a row.
     insert(into: "cursorDiskKV",

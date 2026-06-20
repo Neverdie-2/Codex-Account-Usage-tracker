@@ -85,7 +85,9 @@ final class CursorUsageScanner {
                 let model = (bubble.modelName?.isEmpty == false) ? bubble.modelName! : primaryModel
                 if perModel[model] == nil { modelOrder.append(model) }
                 var accumulator = perModel[model] ?? ModelAccumulator()
-                accumulator.inputTokens = Swift.max(accumulator.inputTokens, bubble.inputTokens)
+                // Input = peak context, drawn from whichever signal Cursor recorded
+                // (tokenCount.inputTokens or contextWindowStatusAtCreation.tokensUsed).
+                accumulator.inputTokens = Swift.max(accumulator.inputTokens, bubble.inputTokens, bubble.contextTokens)
                 accumulator.outputTokens += bubble.outputTokens
                 if let date = CursorAccountRecord.parseISO8601(bubble.createdAt) {
                     accumulator.latest = Self.maxDate(accumulator.latest, date)

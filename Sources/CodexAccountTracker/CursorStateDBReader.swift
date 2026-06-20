@@ -27,6 +27,10 @@ struct CursorBubbleRow: Equatable {
     let workspaceProjectDir: String?
     let inputTokens: Int
     let outputTokens: Int
+    /// `contextWindowStatusAtCreation.tokensUsed` — the context-window fill at the
+    /// turn, a second "context size" signal Cursor records on some bubbles that
+    /// `tokenCount` misses. Folded into the conversation's peak input.
+    let contextTokens: Int
 }
 
 /// Reads Cursor's `state.vscdb` (a WAL-mode SQLite database Cursor holds open
@@ -220,7 +224,8 @@ final class CursorStateDBConnection {
                json_extract(value, '$.createdAt'),
                json_extract(value, '$.workspaceProjectDir'),
                json_extract(value, '$.tokenCount.inputTokens'),
-               json_extract(value, '$.tokenCount.outputTokens')
+               json_extract(value, '$.tokenCount.outputTokens'),
+               json_extract(value, '$.contextWindowStatusAtCreation.tokensUsed')
         FROM cursorDiskKV WHERE key LIKE 'bubbleId:%'
         """
 
@@ -245,7 +250,8 @@ final class CursorStateDBConnection {
                 createdAt: Self.optionalText(statement, 3),
                 workspaceProjectDir: Self.optionalText(statement, 4),
                 inputTokens: Int(Self.optionalDouble(statement, 5) ?? 0),
-                outputTokens: Int(Self.optionalDouble(statement, 6) ?? 0)
+                outputTokens: Int(Self.optionalDouble(statement, 6) ?? 0),
+                contextTokens: Int(Self.optionalDouble(statement, 7) ?? 0)
             ))
         }
         return rows
