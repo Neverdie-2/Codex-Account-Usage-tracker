@@ -13,9 +13,9 @@ struct SettingsView: View {
             LabeledContent("Cursor API base", value: "https://cursor.com")
             LabeledContent("Cursor usage cache", value: "cursor-usage-cache.json")
             LabeledContent("Cursor accounts", value: "cursor-accounts.json")
-            Picker("Cursor usage window", selection: $viewModel.cursorUsageWindow) {
-                ForEach(CursorUsageTimeWindow.allCases) { window in
-                    Text(window.label).tag(window)
+            Picker("Cursor usage window", selection: $viewModel.cursorUsageScanMode) {
+                ForEach(CodexUsageScanMode.allCases) { mode in
+                    Text(mode.label).tag(mode)
                 }
             }
         }

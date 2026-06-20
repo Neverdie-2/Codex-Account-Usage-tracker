@@ -35,13 +35,14 @@ struct AppPreferences {
         }
     }
 
-    /// Persisted Today / 24h / 7d / All default for the Cursor usage table.
-    static var cursorUsageWindow: CursorUsageTimeWindow {
+    /// Persisted window default for the Cursor usage dashboard (shares the
+    /// CodexUsageScanMode picker the other usage dashboards use).
+    static var cursorUsageWindow: CodexUsageScanMode {
         get {
             guard let rawValue = UserDefaults.standard.string(forKey: Keys.cursorUsageWindow),
-                  let window = CursorUsageTimeWindow(rawValue: rawValue)
-            else { return .today }
-            return window
+                  let mode = CodexUsageScanMode(rawValue: rawValue)
+            else { return .recent30Days }
+            return mode
         }
         set {
             UserDefaults.standard.set(newValue.rawValue, forKey: Keys.cursorUsageWindow)

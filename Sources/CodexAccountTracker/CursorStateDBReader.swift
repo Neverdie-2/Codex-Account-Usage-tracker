@@ -15,13 +15,18 @@ struct CursorComposerMetaRow: Equatable {
     let linesRemoved: Int
 }
 
-/// Scalar fields of one `bubbleId:<composerId>:<uuid>` row.
+/// Scalar fields of one `bubbleId:<composerId>:<uuid>` row. Cursor logs per-message
+/// tokens sparsely and usually on a *separate* bubble whose `modelInfo` is null, so
+/// `modelName` and the token counts often live on different bubbles of the same
+/// conversation — the scanner attributes the tokens to the conversation's model.
 struct CursorBubbleRow: Equatable {
     let composerId: String
     let type: Int
     let modelName: String?
     let createdAt: String?
     let workspaceProjectDir: String?
+    let inputTokens: Int
+    let outputTokens: Int
 }
 
 /// Reads Cursor's `state.vscdb` (a WAL-mode SQLite database Cursor holds open
@@ -213,7 +218,9 @@ final class CursorStateDBConnection {
                json_extract(value, '$.type'),
                json_extract(value, '$.modelInfo.modelName'),
                json_extract(value, '$.createdAt'),
-               json_extract(value, '$.workspaceProjectDir')
+               json_extract(value, '$.workspaceProjectDir'),
+               json_extract(value, '$.tokenCount.inputTokens'),
+               json_extract(value, '$.tokenCount.outputTokens')
         FROM cursorDiskKV WHERE key LIKE 'bubbleId:%'
         """
 
@@ -236,7 +243,9 @@ final class CursorStateDBConnection {
                 type: Int(Self.optionalDouble(statement, 1) ?? 0),
                 modelName: Self.optionalText(statement, 2),
                 createdAt: Self.optionalText(statement, 3),
-                workspaceProjectDir: Self.optionalText(statement, 4)
+                workspaceProjectDir: Self.optionalText(statement, 4),
+                inputTokens: Int(Self.optionalDouble(statement, 5) ?? 0),
+                outputTokens: Int(Self.optionalDouble(statement, 6) ?? 0)
             ))
         }
         return rows

@@ -652,6 +652,29 @@ private struct LMStudioUsageSectionView: View {
     }
 }
 
+private struct CursorUsageSectionView: View {
+    @EnvironmentObject private var viewModel: AccountTrackerViewModel
+
+    var body: some View {
+        CodexLogUsageSectionView(
+            title: "Cursor Usage",
+            subtitle: "Local Cursor conversations (state.vscdb) — est. API-equivalent cost from Cursor's logged tokens (logged sparsely, so a lower bound)",
+            dashboard: viewModel.cursorUsage,
+            isRefreshing: viewModel.isCursorUsageRefreshing,
+            lastScannedAt: viewModel.cursorUsageLastScannedAt,
+            scanMode: $viewModel.cursorUsageScanMode,
+            customStartDate: $viewModel.cursorCustomStartDate,
+            sessionCounterLabel: CodexLogUsageProvider.cursor.sessionCounterLabel,
+            endpointTableTitle: "By mode / model",
+            emptyText: "No Cursor token usage in this window. Cursor logs per-message tokens sparsely; widen the window if conversations look empty.",
+            endpointLabel: { group in
+                "\(group.resource) • \(group.deployment)"
+            },
+            refresh: viewModel.refreshCursorUsage
+        )
+    }
+}
+
 private struct CodexLogUsageSectionView: View {
     let title: String
     let subtitle: String

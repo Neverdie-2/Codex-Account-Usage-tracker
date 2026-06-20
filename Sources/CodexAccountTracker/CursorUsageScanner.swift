@@ -1,11 +1,17 @@
 import Foundation
 
-/// Core TABLE-1 extraction for Cursor usage. The authoritative conversation list
-/// lives in `composerData:<id>` rows; `composer.composerHeaders` only surfaces a
-/// recent subset, so it is used purely to enrich (name / workspace / reset of the
-/// display metadata). Bubbles join on the `bubbleId:<composerId>:<uuid>` key.
-/// Never persists raw message text — counts, models, line deltas, and activity
-/// windows only. Mirrors the dashboard(from:window:now:) shape of `AzureUsageScanner`.
+/// Cursor usage extraction. Produces an `AzureUsageScanResult(provider: .cursor)`
+/// so Cursor renders through the SAME dashboard engine as Codex / Claude Code /
+/// LM Studio — token totals, by-model, and a by-project view with collapsible
+/// sessions and an est. cost column.
+///
+/// Cursor's local data has two quirks the extraction handles:
+///  - Conversations live in `composerData:<id>` rows; `composer.composerHeaders`
+///    only surfaces a recent subset (used here to enrich name / workspace / mode).
+///  - Per-message tokens are logged sparsely and usually on a *separate* bubble
+///    whose `modelInfo` is null, so the served model and the token counts live on
+///    different bubbles of the same conversation. We attribute a conversation's
+///    no-model token bubbles to that conversation's primary (most-used) model.
 final class CursorUsageScanner {
     private let reader: CursorStateDBReader
     private let rendererLogReader: CursorRendererLogReader
@@ -18,176 +24,152 @@ final class CursorUsageScanner {
         self.rendererLogReader = rendererLogReader
     }
 
-    func scan(now: Date = Date(), calendar: Calendar = .current) -> CursorUsageScanResult {
+    func scan() -> AzureUsageScanResult {
+        var result = AzureUsageScanResult(provider: .cursor)
+
         guard let connection = reader.open() else {
-            var summary = CursorUsageSummary()
-            summary.databaseFound = false
-            summary.warnings.append("Cursor state database not found at \(reader.databasePath).")
-            return CursorUsageScanResult(records: [], summary: summary)
+            if reader.databaseExists {
+                result.summary.warnings.append("Could not read the Cursor state database at \(reader.databasePath).")
+            }
+            // Missing Cursor install / never run — empty, no warning.
+            return result
         }
         defer { connection.close() }
 
-        var summary = CursorUsageSummary()
-        summary.databaseFound = true
-
-        // Display metadata (name / workspace / lastUpdatedAt / filesChanged /
-        // contextPct), available only for conversations Cursor keeps in headers.
         let headerMap = Self.headerMap(connection: connection)
 
-        // The authoritative conversation list: composerData:<id> rows.
         var metaByID: [String: CursorComposerMetaRow] = [:]
         for row in connection.composerMetadataRows() {
             metaByID[row.composerId] = row
         }
 
-        // Bubbles grouped by owning composer (key form bubbleId:<composerId>:<uuid>).
         var bubblesByComposer: [String: [CursorBubbleRow]] = [:]
-        let allBubbles = connection.bubbleRows()
-        for bubble in allBubbles {
+        for bubble in connection.bubbleRows() {
             bubblesByComposer[bubble.composerId, default: []].append(bubble)
         }
-        summary.bubblesScanned = allBubbles.count
 
-        // Conversation set = composerData ids ∪ header ids. Orphan bubbles (no
-        // composerData and no header) are ignored so a stray row can't fabricate
-        // a conversation.
+        // Conversations = composerData ids ∪ header ids. Only conversations that
+        // actually have bubbles produce token events (orphan bubbles are ignored).
         var conversationIDs = Set(metaByID.keys)
         conversationIDs.formUnion(headerMap.keys)
 
-        var recordsByID: [String: CursorUsageRecord] = [:]
-        // (model, bubbleCreatedAt) across known conversations, for the today rollup.
-        var todayModelCandidates: [(model: String, createdAt: Date)] = []
+        var sessionCount = 0
+        let sourcePath = reader.databasePath
 
         for composerId in conversationIDs {
-            let meta = metaByID[composerId]
-            let header = headerMap[composerId]
             let bubbles = bubblesByComposer[composerId] ?? []
+            guard !bubbles.isEmpty else { continue }
 
-            var userCount = 0
-            var assistantCount = 0
-            var modelsUsed: [String] = []
-            var seenModels = Set<String>()
-            var earliestBubble: Date?
-            var latestBubble: Date?
-            var bubbleWorkspaceDir: String?
+            let header = headerMap[composerId]
+            let meta = metaByID[composerId]
 
-            for bubble in bubbles {
-                if bubble.type == 1 {
-                    userCount += 1
-                } else if bubble.type == 2 {
-                    assistantCount += 1
-                }
-
-                // Both user and assistant bubbles can carry the served model name;
-                // the assistant bubble's value is the authoritative served model.
-                if let model = bubble.modelName, !model.isEmpty {
-                    if seenModels.insert(model).inserted {
-                        modelsUsed.append(model)
-                    }
-                    if let date = CursorAccountRecord.parseISO8601(bubble.createdAt) {
-                        todayModelCandidates.append((model: model, createdAt: date))
-                    }
-                }
-
-                if let date = CursorAccountRecord.parseISO8601(bubble.createdAt) {
-                    earliestBubble = Self.minDate(earliestBubble, date)
-                    latestBubble = Self.maxDate(latestBubble, date)
-                }
-                if bubbleWorkspaceDir == nil, let dir = bubble.workspaceProjectDir, !dir.isEmpty {
-                    bubbleWorkspaceDir = dir
-                }
-            }
-
-            let messageCount = bubbles.count
-            let metaLinesAdded = meta?.linesAdded ?? 0
-            let metaLinesRemoved = meta?.linesRemoved ?? 0
-            let linesAdded = metaLinesAdded != 0 ? metaLinesAdded : Self.intValue(header?["totalLinesAdded"])
-            let linesRemoved = metaLinesRemoved != 0 ? metaLinesRemoved : Self.intValue(header?["totalLinesRemoved"])
-
-            // Drop empty drafts: no bubbles, no line deltas, and not surfaced in headers.
-            if messageCount == 0, linesAdded == 0, linesRemoved == 0, header == nil {
-                continue
-            }
-
-            let workspace = Self.workspace(header: header, bubbleProjectDir: bubbleWorkspaceDir)
-            let title = Self.title(header: header, composerId: composerId)
             let mode = meta?.unifiedMode
                 ?? meta?.forceMode
                 ?? Self.stringValue(header?["unifiedMode"])
                 ?? "unknown"
-            let filesChanged = Self.intValue(header?["filesChangedCount"])
-            let contextUsagePct = Self.doubleValue(header?["contextUsagePercent"])
+            let projectPath = Self.projectPath(header: header, bubbles: bubbles)
+            let primaryModel = Self.primaryModel(of: bubbles)
 
             let composerCreatedAt = meta?.createdAtMs.map { Date(timeIntervalSince1970: $0 / 1000) }
             let headerUpdatedAt = Self.msEpochDate(header?["lastUpdatedAt"])
+            var conversationLatest = Self.maxDate(headerUpdatedAt, composerCreatedAt)
 
-            let firstActivity = Self.minDate(composerCreatedAt, earliestBubble)
-            let lastActivity = Self.maxDate(Self.maxDate(headerUpdatedAt, latestBubble), composerCreatedAt)
-
-            let recordID = "cursor-composer-\(composerId)"
-            recordsByID[recordID] = CursorUsageRecord(
-                id: recordID,
-                conversationId: composerId,
-                workspace: workspace,
-                title: title,
-                mode: mode,
-                modelsUsed: modelsUsed,
-                userCount: userCount,
-                assistantCount: assistantCount,
-                messageCount: messageCount,
-                linesAdded: linesAdded,
-                linesRemoved: linesRemoved,
-                filesChanged: filesChanged,
-                contextUsagePct: contextUsagePct,
-                firstActivity: firstActivity,
-                lastActivity: lastActivity
-            )
-        }
-
-        summary.composersScanned = recordsByID.count
-
-        let todayStart = calendar.startOfDay(for: now)
-        var todaySeen = Set<String>()
-        var modelsUsedToday: [String] = []
-        for candidate in todayModelCandidates where calendar.startOfDay(for: candidate.createdAt) == todayStart {
-            if todaySeen.insert(candidate.model).inserted {
-                modelsUsedToday.append(candidate.model)
+            // Accumulate tokens per attributed model.
+            var perModel: [String: ModelAccumulator] = [:]
+            var modelOrder: [String] = []
+            for bubble in bubbles {
+                let model = (bubble.modelName?.isEmpty == false) ? bubble.modelName! : primaryModel
+                if perModel[model] == nil { modelOrder.append(model) }
+                var accumulator = perModel[model] ?? ModelAccumulator()
+                accumulator.inputTokens += bubble.inputTokens
+                accumulator.outputTokens += bubble.outputTokens
+                if let date = CursorAccountRecord.parseISO8601(bubble.createdAt) {
+                    accumulator.latest = Self.maxDate(accumulator.latest, date)
+                    conversationLatest = Self.maxDate(conversationLatest, date)
+                }
+                perModel[model] = accumulator
             }
-        }
-        summary.modelsUsedToday = modelsUsedToday
 
-        let records = Self.sortedByLastActivityDescending(Array(recordsByID.values))
-        return CursorUsageScanResult(records: records, summary: summary)
+            let fallbackTimestamp = conversationLatest ?? Date(timeIntervalSince1970: 0)
+            for model in modelOrder {
+                guard let accumulator = perModel[model] else { continue }
+                let usage = AzureTokenUsage(
+                    inputTokens: accumulator.inputTokens,
+                    cachedInputTokens: 0,
+                    outputTokens: accumulator.outputTokens,
+                    reasoningOutputTokens: 0,
+                    totalTokens: accumulator.inputTokens + accumulator.outputTokens
+                )
+                let record = AzureUsageRecord(
+                    id: "cursor-\(composerId)-\(model)",
+                    sessionID: composerId,
+                    filePath: sourcePath,
+                    timestamp: accumulator.latest ?? fallbackTimestamp,
+                    endpoint: "Cursor",
+                    resource: mode,
+                    deployment: model,
+                    model: model,
+                    projectPath: projectPath,
+                    usage: usage
+                )
+                result.records.append(record)
+                result.summary.eventsCounted += 1
+                result.summary.earliestEvent = Self.minDate(result.summary.earliestEvent, record.timestamp)
+                result.summary.latestEvent = Self.maxDate(result.summary.latestEvent, record.timestamp)
+            }
+            sessionCount += 1
+        }
+
+        result.records.sort { lhs, rhs in
+            if lhs.timestamp != rhs.timestamp { return lhs.timestamp < rhs.timestamp }
+            return lhs.id.localizedCaseInsensitiveCompare(rhs.id) == .orderedAscending
+        }
+        result.summary.sessionsScanned = sessionCount
+        result.summary.providerSessions = sessionCount
+        return result
     }
 
-    func currentFingerprint() -> CodexLocalUsageFileFingerprint? {
-        reader.fingerprint()
+    // MARK: - Per-conversation helpers
+
+    private struct ModelAccumulator {
+        var inputTokens = 0
+        var outputTokens = 0
+        var latest: Date?
     }
 
-    static func dashboard(
-        from result: CursorUsageScanResult,
-        window: CursorUsageTimeWindow,
-        now: Date,
-        calendar: Calendar = .current
-    ) -> CursorUsageDashboard {
-        let start = window.startDate(now: now, calendar: calendar)
-        let filtered = result.records.filter { record in
-            guard let start else { return true }
-            guard let lastActivity = record.lastActivity else { return false }
-            return lastActivity >= start
+    /// The most-used non-empty model across a conversation's bubbles (first-seen
+    /// wins on a tie). Falls back to the shared "unknown" model.
+    private static func primaryModel(of bubbles: [CursorBubbleRow]) -> String {
+        var counts: [String: Int] = [:]
+        var order: [String] = []
+        for bubble in bubbles {
+            guard let model = bubble.modelName, !model.isEmpty else { continue }
+            if counts[model] == nil { order.append(model) }
+            counts[model, default: 0] += 1
         }
+        var best = 0
+        var primary = AzureUsageScanner.unknownModel
+        for model in order where counts[model, default: 0] > best {
+            best = counts[model, default: 0]
+            primary = model
+        }
+        return primary
+    }
 
-        return CursorUsageDashboard(
-            records: sortedByLastActivityDescending(filtered),
-            modelsUsedToday: result.summary.modelsUsedToday,
-            summary: result.summary
-        )
+    private static func projectPath(header: [String: Any]?, bubbles: [CursorBubbleRow]) -> String {
+        if let identifier = header?["workspaceIdentifier"] as? [String: Any],
+           let path = stringValue((identifier["uri"] as? [String: Any])?["path"]),
+           !path.isEmpty {
+            return path
+        }
+        if let dir = bubbles.compactMap({ $0.workspaceProjectDir }).first(where: { !$0.isEmpty }) {
+            return dir
+        }
+        return AzureUsageRecord.unknownProject
     }
 
     // MARK: - Header enrichment
 
-    /// `composer.composerHeaders.allComposers` keyed by composerId, for display
-    /// metadata that the `composerData:` rows don't carry.
     private static func headerMap(connection: CursorStateDBConnection) -> [String: [String: Any]] {
         guard let headers = connection.itemValue(key: "composer.composerHeaders"),
               let object = jsonObject(from: headers),
@@ -202,44 +184,6 @@ final class CursorUsageScanner {
             map[composerId] = composer
         }
         return map
-    }
-
-    private static func workspace(header: [String: Any]?, bubbleProjectDir: String?) -> CursorWorkspaceProject {
-        if let identifier = header?["workspaceIdentifier"] as? [String: Any] {
-            let path = stringValue((identifier["uri"] as? [String: Any])?["path"])
-            let id = stringValue(identifier["id"])
-            if path != nil || id != nil {
-                return CursorWorkspaceProject(path: path, id: id)
-            }
-        }
-        if let bubbleProjectDir, !bubbleProjectDir.isEmpty {
-            return CursorWorkspaceProject(path: bubbleProjectDir, id: nil)
-        }
-        return CursorWorkspaceProject(path: nil, id: nil)
-    }
-
-    private static func title(header: [String: Any]?, composerId: String) -> String {
-        if let name = stringValue(header?["name"]),
-           !name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            return name
-        }
-        if let subtitle = stringValue(header?["subtitle"]),
-           !subtitle.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            return subtitle
-        }
-        // Privacy: never derive a title from bubble text (it would be cached).
-        return "Conversation \(composerId.prefix(8))"
-    }
-
-    // MARK: - Sorting
-
-    private static func sortedByLastActivityDescending(_ records: [CursorUsageRecord]) -> [CursorUsageRecord] {
-        records.sorted { lhs, rhs in
-            let lhsDate = lhs.lastActivity ?? .distantPast
-            let rhsDate = rhs.lastActivity ?? .distantPast
-            if lhsDate != rhsDate { return lhsDate > rhsDate }
-            return lhs.id.localizedCaseInsensitiveCompare(rhs.id) == .orderedAscending
-        }
     }
 
     // MARK: - JSON helpers
@@ -257,17 +201,6 @@ final class CursorUsageScanner {
         value as? String
     }
 
-    /// NSNumber bridging survives both integer and float JSON serialization,
-    /// where `as? Int` would return nil for a float.
-    private static func intValue(_ value: Any?) -> Int {
-        (value as? NSNumber)?.intValue ?? 0
-    }
-
-    private static func doubleValue(_ value: Any?) -> Double? {
-        (value as? NSNumber)?.doubleValue
-    }
-
-    /// Millisecond-epoch number → `Date`.
     private static func msEpochDate(_ value: Any?) -> Date? {
         guard let ms = (value as? NSNumber)?.doubleValue, ms > 0 else { return nil }
         return Date(timeIntervalSince1970: ms / 1000)

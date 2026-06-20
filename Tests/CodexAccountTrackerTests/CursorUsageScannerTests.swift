@@ -6,8 +6,8 @@ final class CursorUsageScannerTests: XCTestCase {
     private var rendererDir: URL!
     private var scanner: CursorUsageScanner!
 
-    private let now = CursorAccountRecord.parseISO8601("2026-06-20T12:00:00Z")!
-    private let cal = utcCalendar
+    private let composerA = "11111111-2222-3333-4444-555555555555"
+    private let composerB = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
 
     override func setUp() {
         super.setUp()
@@ -31,60 +31,57 @@ final class CursorUsageScannerTests: XCTestCase {
         super.tearDown()
     }
 
-    private func record(in result: CursorUsageScanResult, id: String) -> CursorUsageRecord? {
-        result.records.first { $0.id == id }
+    func testScanProducesCursorProviderResult() {
+        XCTAssertEqual(scanner.scan().provider, .cursor)
     }
 
-    func testAgentComposerCountsModelsAndDeltas() {
-        let result = scanner.scan(now: now, calendar: cal)
-
-        let agent = try! XCTUnwrap(
-            record(in: result, id: "cursor-composer-11111111-2222-3333-4444-555555555555")
-        )
-        XCTAssertEqual(agent.modelsUsed, ["composer-2.5", "claude-4.5-opus-high-thinking"])
-        XCTAssertEqual(agent.messageCount, 3)
-        XCTAssertEqual(agent.userCount, 2)
-        XCTAssertEqual(agent.assistantCount, 1)
-        XCTAssertEqual(agent.linesAdded, 128)
-        XCTAssertEqual(agent.linesRemoved, 17)
-        XCTAssertEqual(agent.filesChanged, 4)
-        XCTAssertEqual(agent.workspace.name, "MyProject")
+    /// The null-model token bubble's tokens are attributed to the conversation's
+    /// served (primary) model — claude — and tagged with the conversation's mode.
+    func testAttributesNoModelTokensToPrimaryModel() throws {
+        let result = scanner.scan()
+        let aRecords = result.records.filter { $0.sessionID == composerA }
+        let claude = try XCTUnwrap(aRecords.first { $0.model == "claude-4.5-opus-high-thinking" })
+        XCTAssertEqual(claude.usage.inputTokens, 1_000_000)
+        XCTAssertEqual(claude.usage.outputTokens, 200_000)
+        XCTAssertEqual(claude.usage.totalTokens, 1_200_000)
+        XCTAssertEqual(claude.endpoint, "Cursor")
+        XCTAssertEqual(claude.resource, "agent")
     }
 
-    func testUnscopedChatComposer() {
-        let result = scanner.scan(now: now, calendar: cal)
-
-        let chat = try! XCTUnwrap(
-            record(in: result, id: "cursor-composer-aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee")
-        )
-        XCTAssertEqual(chat.workspace.name, "Unscoped")
-        XCTAssertEqual(chat.title, "quick question")
-        XCTAssertEqual(chat.mode, "chat")
+    /// A chat conversation with no bubbles logs no token events, so it produces
+    /// no usage records (matching the other token dashboards).
+    func testConversationWithoutBubblesProducesNoRecords() {
+        let result = scanner.scan()
+        XCTAssertTrue(result.records.filter { $0.sessionID == composerB }.isEmpty)
     }
 
-    func testModelsUsedTodayRollup() {
-        let result = scanner.scan(now: now, calendar: cal)
-
-        XCTAssertTrue(result.summary.modelsUsedToday.contains("composer-2.5"))
-        XCTAssertTrue(result.summary.modelsUsedToday.contains("claude-4.5-opus-high-thinking"))
-        // gemini-3-flash only lives in a preference key, never a today bubble.
-        XCTAssertFalse(result.summary.modelsUsedToday.contains("gemini-3-flash"))
-        // decoy-model belongs to a prefix-colliding key under a different conversation.
-        XCTAssertFalse(result.summary.modelsUsedToday.contains("decoy-model"))
+    /// The orphan decoy bubble (no composerData / header) is ignored.
+    func testOrphanDecoyBubbleIgnored() {
+        let result = scanner.scan()
+        XCTAssertFalse(result.records.contains { $0.model == "decoy-model" })
+        XCTAssertFalse(result.records.contains { $0.sessionID.hasSuffix("X") })
     }
 
-    func testTodayWindowFiltersByLastActivity() {
-        let result = scanner.scan(now: now, calendar: cal)
-        let dash = CursorUsageScanner.dashboard(from: result, window: .today, now: now, calendar: cal)
+    func testDashboardTotalsModelProjectAndCost() throws {
+        let result = scanner.scan()
+        let now = CursorAccountRecord.parseISO8601("2026-06-21T00:00:00Z")!
+        let dashboard = AzureUsageScanner.dashboard(from: result, window: .allTime, customStartDate: now, now: now)
 
-        let ids = dash.records.map(\.id)
-        XCTAssertTrue(ids.contains("cursor-composer-11111111-2222-3333-4444-555555555555"))
-        XCTAssertFalse(ids.contains("cursor-composer-aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"))
+        XCTAssertEqual(dashboard.totals.totalTokens, 1_200_000)
+        // claude-opus-4.5+ preset: $5/M input, $25/M output → 5 + 5 = $10.
+        XCTAssertEqual(dashboard.totals.estimatedCostUSD, 10.0, accuracy: 0.001)
+        XCTAssertTrue(dashboard.byModel.contains { $0.model == "claude-4.5-opus-high-thinking" })
+
+        let project = try XCTUnwrap(dashboard.byProject.first { $0.projectName == "MyProject" })
+        XCTAssertEqual(project.sessionCount, 1)
+        XCTAssertTrue(project.sessions.contains { $0.sessionID == composerA })
     }
 
-    func testScanningTwiceDedupesRecords() {
-        let first = scanner.scan(now: now, calendar: cal)
-        let second = scanner.scan(now: now, calendar: cal)
-        XCTAssertEqual(first.records.count, second.records.count)
+    func testWindowFilteringExcludesOldActivity() {
+        let result = scanner.scan()
+        // 5 days after the fixture bubbles → the last-24h window has no events.
+        let now = CursorAccountRecord.parseISO8601("2026-06-25T00:00:00Z")!
+        let dashboard = AzureUsageScanner.dashboard(from: result, window: .last24Hours, customStartDate: now, now: now)
+        XCTAssertEqual(dashboard.totals.totalTokens, 0)
     }
 }

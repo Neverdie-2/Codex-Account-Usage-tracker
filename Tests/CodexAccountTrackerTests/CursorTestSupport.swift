@@ -106,20 +106,25 @@ func makeSampleStateDB() -> URL {
            value: "{\"composerId\":\"aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee\",\"createdAt\":1749000000000,\"unifiedMode\":\"chat\",\"totalLinesAdded\":0,\"totalLinesRemoved\":0}")
 
     // Bubbles join on the colon-separated key bubbleId:<composerId>:<bubbleUuid>.
+    // Conversation A's served model is claude; the token counts live on a SEPARATE
+    // null-model bubble (b4) — the scanner attributes them to the conversation's model.
     insert(into: "cursorDiskKV",
            key: "bubbleId:11111111-2222-3333-4444-555555555555:b1",
-           value: "{\"type\":1,\"text\":\"refactor this\",\"modelInfo\":{\"modelName\":\"composer-2.5\"},\"createdAt\":\"2026-06-20T07:43:24.081Z\"}")
+           value: "{\"type\":1,\"text\":\"refactor this\",\"modelInfo\":{\"modelName\":\"claude-4.5-opus-high-thinking\"},\"createdAt\":\"2026-06-20T07:43:24.081Z\",\"tokenCount\":{\"inputTokens\":0,\"outputTokens\":0}}")
     insert(into: "cursorDiskKV",
            key: "bubbleId:11111111-2222-3333-4444-555555555555:b2",
-           value: "{\"type\":2,\"text\":\"done\",\"modelInfo\":null,\"createdAt\":\"2026-06-20T07:43:30.000Z\"}")
+           value: "{\"type\":2,\"text\":\"done\",\"modelInfo\":null,\"createdAt\":\"2026-06-20T07:43:30.000Z\",\"tokenCount\":{\"inputTokens\":0,\"outputTokens\":0}}")
     insert(into: "cursorDiskKV",
            key: "bubbleId:11111111-2222-3333-4444-555555555555:b3",
-           value: "{\"type\":1,\"text\":\"now tests\",\"modelInfo\":{\"modelName\":\"claude-4.5-opus-high-thinking\"},\"createdAt\":\"2026-06-20T08:10:00.000Z\"}")
+           value: "{\"type\":1,\"text\":\"now tests\",\"modelInfo\":{\"modelName\":\"claude-4.5-opus-high-thinking\"},\"createdAt\":\"2026-06-20T08:10:00.000Z\",\"tokenCount\":{\"inputTokens\":0,\"outputTokens\":0}}")
+    insert(into: "cursorDiskKV",
+           key: "bubbleId:11111111-2222-3333-4444-555555555555:b4",
+           value: "{\"type\":2,\"text\":\"\",\"modelInfo\":null,\"createdAt\":\"2026-06-20T08:11:00.000Z\",\"tokenCount\":{\"inputTokens\":1000000,\"outputTokens\":200000}}")
     // Prefix-colliding ORPHAN decoy (composerId ...555555555555X has no
     // composerData/header) — must NOT leak into composer 1111… or fabricate a row.
     insert(into: "cursorDiskKV",
            key: "bubbleId:11111111-2222-3333-4444-555555555555X:WRONG",
-           value: "{\"type\":1,\"text\":\"decoy\",\"modelInfo\":{\"modelName\":\"decoy-model\"},\"createdAt\":\"2026-06-20T09:00:00.000Z\"}")
+           value: "{\"type\":1,\"text\":\"decoy\",\"modelInfo\":{\"modelName\":\"decoy-model\"},\"createdAt\":\"2026-06-20T09:00:00.000Z\",\"tokenCount\":{\"inputTokens\":500,\"outputTokens\":50}}")
 
     return dbURL
 }

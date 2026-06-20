@@ -30,7 +30,7 @@ final class CursorStateDBReaderTests: XCTestCase {
             likePrefix: "bubbleId:11111111-2222-3333-4444-555555555555:"
         )
 
-        XCTAssertEqual(rows.count, 3, "anchored prefix should match exactly the three bubbles")
+        XCTAssertEqual(rows.count, 4, "anchored prefix should match exactly the four bubbles")
         XCTAssertFalse(rows.contains { $0.key.contains("WRONG") },
                        "trailing-colon anchoring must exclude the prefix-colliding decoy")
     }
@@ -53,9 +53,11 @@ final class CursorStateDBReaderTests: XCTestCase {
 
         let bubbles = connection.bubbleRows()
         let agentBubbles = bubbles.filter { $0.composerId == "11111111-2222-3333-4444-555555555555" }
-        XCTAssertEqual(agentBubbles.count, 3, "colon-keyed bubbles parse the composerId from segment 2")
-        XCTAssertEqual(agentBubbles.compactMap(\.modelName).sorted(),
-                       ["claude-4.5-opus-high-thinking", "composer-2.5"])
+        XCTAssertEqual(agentBubbles.count, 4, "colon-keyed bubbles parse the composerId from segment 2")
+        XCTAssertEqual(Set(agentBubbles.compactMap(\.modelName)), ["claude-4.5-opus-high-thinking"])
+        // Tokens are logged on a separate null-model bubble.
+        XCTAssertEqual(agentBubbles.map(\.inputTokens).reduce(0, +), 1_000_000)
+        XCTAssertEqual(agentBubbles.map(\.outputTokens).reduce(0, +), 200_000)
         // The orphan decoy parses to a different composerId and never joins composer 1111….
         XCTAssertTrue(bubbles.contains { $0.composerId == "11111111-2222-3333-4444-555555555555X" })
     }

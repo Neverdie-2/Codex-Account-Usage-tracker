@@ -29,6 +29,7 @@ final class AzureUsageScanner {
         // LM Studio path. Fail loudly in debug if one is ever wired up by mistake —
         // otherwise it would silently return an empty, plausible-looking result.
         assert(provider != .lmStudio, "Use LMStudioConversationStore for LM Studio usage")
+        assert(provider != .cursor, "Use CursorUsageScanner for Cursor usage")
         let metadata: AzureUsageDetectedMetadata
         switch provider {
         case .azure:
@@ -37,9 +38,9 @@ final class AzureUsageScanner {
             metadata = AzureUsageDetectedMetadata(endpoint: "OpenAI", resource: "Codex local logs", deployment: nil, warnings: [])
         case .claudeCode:
             metadata = AzureUsageDetectedMetadata(endpoint: "Anthropic", resource: "Claude Code transcripts", deployment: nil, warnings: [])
-        case .lmStudio:
-            // LM Studio usage is produced by LMStudioConversationStore, not this scanner.
-            metadata = AzureUsageDetectedMetadata(endpoint: "LM Studio", resource: "Local chats", deployment: nil, warnings: [])
+        case .lmStudio, .cursor:
+            // LM Studio / Cursor usage is produced by their own stores, not this scanner.
+            metadata = AzureUsageDetectedMetadata(endpoint: provider.displayName, resource: "Local", deployment: nil, warnings: [])
         }
         var result = AzureUsageScanResult(provider: provider)
         var state = AzureUsageScanState()
@@ -49,7 +50,7 @@ final class AzureUsageScanner {
             jsonlFileURLs()
         case .claudeCode:
             jsonlFileURLs(since: startDate)
-        case .lmStudio:
+        case .lmStudio, .cursor:
             [URL]()
         }
         result.summary.filesScanned = fileURLs.count
@@ -59,7 +60,7 @@ final class AzureUsageScanner {
             scanCodexLocalSessions(fileURLs: fileURLs, metadata: metadata, eventCutoff: startDate, result: &result, state: &state)
         case .claudeCode:
             scanClaudeCodeSessions(fileURLs: fileURLs, eventCutoff: startDate, result: &result, state: &state)
-        case .lmStudio:
+        case .lmStudio, .cursor:
             break
         }
 
@@ -997,10 +998,10 @@ final class AzureUsageScanner {
         case .claudeCode:
             endpoint = metadata.endpoint ?? "Anthropic"
             resource = metadata.resource ?? "Claude Code transcripts"
-        case .lmStudio:
-            // Unreachable: the scanner never emits LM Studio records (see scan()).
-            endpoint = metadata.endpoint ?? "LM Studio"
-            resource = metadata.resource ?? "Local chats"
+        case .lmStudio, .cursor:
+            // Unreachable: the scanner never emits LM Studio / Cursor records (see scan()).
+            endpoint = metadata.endpoint ?? provider.displayName
+            resource = metadata.resource ?? "Local"
         }
         let deployment = model == Self.unknownModel ? (metadata.deployment ?? Self.unknownDeployment) : model
         let record = AzureUsageRecord(
