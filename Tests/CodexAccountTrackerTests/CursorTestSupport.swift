@@ -97,18 +97,28 @@ func makeSampleStateDB() -> URL {
     insert(into: "ItemTable", key: "cursorAuth/accessToken",
            value: CursorTestJWT.valid)
 
+    // The authoritative conversation list lives in composerData:<id> rows.
     insert(into: "cursorDiskKV",
-           key: "bubbleId:11111111-2222-3333-4444-555555555555-b1",
+           key: "composerData:11111111-2222-3333-4444-555555555555",
+           value: "{\"composerId\":\"11111111-2222-3333-4444-555555555555\",\"createdAt\":1750405404081,\"unifiedMode\":\"agent\",\"forceMode\":\"agent\",\"totalLinesAdded\":128,\"totalLinesRemoved\":17}")
+    insert(into: "cursorDiskKV",
+           key: "composerData:aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",
+           value: "{\"composerId\":\"aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee\",\"createdAt\":1749000000000,\"unifiedMode\":\"chat\",\"totalLinesAdded\":0,\"totalLinesRemoved\":0}")
+
+    // Bubbles join on the colon-separated key bubbleId:<composerId>:<bubbleUuid>.
+    insert(into: "cursorDiskKV",
+           key: "bubbleId:11111111-2222-3333-4444-555555555555:b1",
            value: "{\"type\":1,\"text\":\"refactor this\",\"modelInfo\":{\"modelName\":\"composer-2.5\"},\"createdAt\":\"2026-06-20T07:43:24.081Z\"}")
     insert(into: "cursorDiskKV",
-           key: "bubbleId:11111111-2222-3333-4444-555555555555-b2",
+           key: "bubbleId:11111111-2222-3333-4444-555555555555:b2",
            value: "{\"type\":2,\"text\":\"done\",\"modelInfo\":null,\"createdAt\":\"2026-06-20T07:43:30.000Z\"}")
     insert(into: "cursorDiskKV",
-           key: "bubbleId:11111111-2222-3333-4444-555555555555-b3",
+           key: "bubbleId:11111111-2222-3333-4444-555555555555:b3",
            value: "{\"type\":1,\"text\":\"now tests\",\"modelInfo\":{\"modelName\":\"claude-4.5-opus-high-thinking\"},\"createdAt\":\"2026-06-20T08:10:00.000Z\"}")
-    // Prefix-colliding DECOY under a different conversation — must NOT leak into composer 1111….
+    // Prefix-colliding ORPHAN decoy (composerId ...555555555555X has no
+    // composerData/header) — must NOT leak into composer 1111… or fabricate a row.
     insert(into: "cursorDiskKV",
-           key: "bubbleId:11111111-2222-3333-4444-555555555555X-WRONG",
+           key: "bubbleId:11111111-2222-3333-4444-555555555555X:WRONG",
            value: "{\"type\":1,\"text\":\"decoy\",\"modelInfo\":{\"modelName\":\"decoy-model\"},\"createdAt\":\"2026-06-20T09:00:00.000Z\"}")
 
     return dbURL

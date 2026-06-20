@@ -16,7 +16,7 @@ final class CursorStateDBReaderTests: XCTestCase {
                       "composer.composerHeaders should contain the allComposers array")
     }
 
-    /// The anchored `LIKE` join with a trailing hyphen returns exactly the three
+    /// The anchored `LIKE` join with a trailing colon returns exactly the three
     /// bubbles under the conversation and excludes the prefix-colliding decoy.
     func testCursorDiskKVAnchoredLikeExcludesDecoy() throws {
         let dbURL = makeSampleStateDB()
@@ -27,12 +27,37 @@ final class CursorStateDBReaderTests: XCTestCase {
         defer { connection.close() }
 
         let rows = connection.cursorDiskKVValues(
-            likePrefix: "bubbleId:11111111-2222-3333-4444-555555555555-"
+            likePrefix: "bubbleId:11111111-2222-3333-4444-555555555555:"
         )
 
         XCTAssertEqual(rows.count, 3, "anchored prefix should match exactly the three bubbles")
         XCTAssertFalse(rows.contains { $0.key.contains("WRONG") },
-                       "trailing-hyphen anchoring must exclude the prefix-colliding decoy")
+                       "trailing-colon anchoring must exclude the prefix-colliding decoy")
+    }
+
+    /// composerData rows and colon-joined bubbles are extracted via SQL json_extract.
+    func testComposerMetadataAndBubbleRows() throws {
+        let dbURL = makeSampleStateDB()
+        defer { removeTempDB(dbURL) }
+
+        let reader = CursorStateDBReader(databaseURL: dbURL)
+        let connection = try XCTUnwrap(reader.open())
+        defer { connection.close() }
+
+        let metas = connection.composerMetadataRows()
+        XCTAssertEqual(metas.count, 2)
+        let agentMeta = try XCTUnwrap(metas.first { $0.composerId == "11111111-2222-3333-4444-555555555555" })
+        XCTAssertEqual(agentMeta.unifiedMode, "agent")
+        XCTAssertEqual(agentMeta.linesAdded, 128)
+        XCTAssertEqual(agentMeta.linesRemoved, 17)
+
+        let bubbles = connection.bubbleRows()
+        let agentBubbles = bubbles.filter { $0.composerId == "11111111-2222-3333-4444-555555555555" }
+        XCTAssertEqual(agentBubbles.count, 3, "colon-keyed bubbles parse the composerId from segment 2")
+        XCTAssertEqual(agentBubbles.compactMap(\.modelName).sorted(),
+                       ["claude-4.5-opus-high-thinking", "composer-2.5"])
+        // The orphan decoy parses to a different composerId and never joins composer 1111….
+        XCTAssertTrue(bubbles.contains { $0.composerId == "11111111-2222-3333-4444-555555555555X" })
     }
 
     /// The token stored in ItemTable round-trips through the convenience accessor.

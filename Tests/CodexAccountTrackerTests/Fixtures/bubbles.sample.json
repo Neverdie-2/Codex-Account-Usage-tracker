@@ -1,8 +1,8 @@
 [
-  { "key":"bubbleId:11111111-2222-3333-4444-555555555555-b1",
+  { "key":"bubbleId:11111111-2222-3333-4444-555555555555:b1",
     "value":{ "type":1, "text":"refactor this", "modelInfo":{ "modelName":"composer-2.5" }, "createdAt":"2026-06-20T07:43:24.081Z" } },
-  { "key":"bubbleId:11111111-2222-3333-4444-555555555555-b2",
+  { "key":"bubbleId:11111111-2222-3333-4444-555555555555:b2",
     "value":{ "type":2, "text":"done", "modelInfo":null, "createdAt":"2026-06-20T07:43:30.000Z" } },
-  { "key":"bubbleId:11111111-2222-3333-4444-555555555555-b3",
+  { "key":"bubbleId:11111111-2222-3333-4444-555555555555:b3",
     "value":{ "type":1, "text":"now tests", "modelInfo":{ "modelName":"claude-4.5-opus-high-thinking" }, "createdAt":"2026-06-20T08:10:00.000Z" } }
 ]
