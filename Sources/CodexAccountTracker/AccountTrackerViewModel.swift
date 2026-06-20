@@ -26,6 +26,18 @@ final class AccountTrackerViewModel: ObservableObject {
     @Published private(set) var claudeCodeLastScannedAt: Date?
     @Published private(set) var lmStudioLastScannedAt: Date?
     @Published private(set) var openAIAPIBillingLastScannedAt: Date?
+    @Published private(set) var cursorUsage = CursorUsageDashboard.empty
+    @Published private(set) var cursorAccounts: [CursorAccountRecord] = []
+    @Published private(set) var isCursorUsageRefreshing = false
+    @Published private(set) var isCursorLimitsRefreshing = false
+    @Published private(set) var cursorUsageLastScannedAt: Date?
+    @Published private(set) var cursorLimitsLastFetchedAt: Date?
+    @Published var cursorUsageWindow: CursorUsageTimeWindow = AppPreferences.cursorUsageWindow {
+        didSet {
+            AppPreferences.cursorUsageWindow = cursorUsageWindow
+            rebuildCursorUsageDashboard()
+        }
+    }
     @Published var openAIAdminKey: String {
         didSet {
             KeychainSecretStore.save(openAIAdminKey, account: Self.openAIAdminKeyAccount)
@@ -125,6 +137,13 @@ final class AccountTrackerViewModel: ObservableObject {
     private let opencodeUsageStore = OpencodeUsageStore()
     private var lmStudioScanResult = AzureUsageScanResult(provider: .lmStudio)
     private var openAIAPIBillingResult = OpenAIAPIBillingResult.empty
+    private let cursorUsageCacheStore = CursorUsageCacheStore()
+    private let cursorUsageIndexStore = CursorUsageIndexStore()
+    private let cursorAccountStore = CursorAccountStore()
+    private let cursorScanner = CursorUsageScanner()
+    private let cursorAPIClient = CursorAPIClient()
+    private let cursorAuth = CursorAuth()
+    private var cursorScanResult = CursorUsageScanResult.empty
     private var refreshTask: Task<Void, Never>?
     private var displayClockTask: Task<Void, Never>?
     private var authMonitorTask: Task<Void, Never>?
@@ -242,6 +261,7 @@ final class AccountTrackerViewModel: ObservableObject {
         }
         statusText = accounts.isEmpty ? "Idle" : "Saved"
         loadUsageCaches()
+        loadCursorCaches()
         if shouldRebuildAzureUsageCache {
             refreshAzureUsage()
         }
@@ -253,6 +273,8 @@ final class AccountTrackerViewModel: ObservableObject {
         }
         // LM Studio rescans are cheap (a handful of JSON files) — always refresh on launch.
         refreshLMStudioUsage()
+        refreshCursorUsage()
+        refreshCursorLimits()
         await startLiveMonitoring()
     }
 
@@ -421,6 +443,109 @@ final class AccountTrackerViewModel: ObservableObject {
         }
     }
 
+    private func loadCursorCaches() {
+        if let cache = cursorUsageCacheStore.load() {
+            cursorScanResult = cache.result
+            cursorUsageLastScannedAt = cache.scannedAt
+            rebuildCursorUsageDashboard()
+        }
+        cursorAccounts = cursorAccountStore.load()
+    }
+
+    func refreshCursorUsage() {
+        guard !isCursorUsageRefreshing else { return }
+        isCursorUsageRefreshing = true
+        let previous = cursorScanResult
+        Task { [weak self, cursorScanner, cursorUsageCacheStore, cursorUsageIndexStore] in
+            let scanned = await Task.detached(priority: .utility) { () -> (result: CursorUsageScanResult, fingerprint: CodexLocalUsageFileFingerprint?, changed: Bool) in
+                let fingerprint = cursorScanner.currentFingerprint()
+                let savedFingerprint = cursorUsageIndexStore.load().fingerprint
+                if let fingerprint, let savedFingerprint, fingerprint == savedFingerprint, !previous.records.isEmpty {
+                    return (previous, fingerprint, false)
+                }
+                return (cursorScanner.scan(), fingerprint, true)
+            }.value
+            guard let self else { return }
+            defer { isCursorUsageRefreshing = false }
+            let scannedAt = Date()
+            if scanned.changed {
+                cursorScanResult = Self.mergedCursorResult(previous, with: scanned.result)
+                cursorUsageLastScannedAt = scannedAt
+                cursorUsageCacheStore.save(cursorScanResult, scannedAt: scannedAt)
+                var index = CursorUsageIndex(version: CursorUsageIndexStore.currentVersion)
+                index.fingerprint = scanned.fingerprint
+                cursorUsageIndexStore.save(index)
+            }
+            rebuildCursorUsageDashboard()
+        }
+    }
+
+    func refreshCursorLimits() {
+        guard !isCursorLimitsRefreshing else { return }
+        isCursorLimitsRefreshing = true
+        let now = displayNow
+        Task { [weak self, cursorAuth, cursorAPIClient, cursorAccountStore] in
+            guard let self else { return }
+            defer { isCursorLimitsRefreshing = false }
+            let snapshot = await Task.detached(priority: .utility) { cursorAuth.readSnapshot() }.value
+            guard let jwt = snapshot.accessTokenJWT, let payload = try? cursorAuth.decode(jwt: jwt) else {
+                applyStaleCursorAccount(from: snapshot)
+                return
+            }
+            if cursorAuth.isExpired(payload, now: now) {
+                applyStaleCursorAccount(from: snapshot)
+                return
+            }
+            let cookie = cursorAuth.cookieHeaderValue(sub: payload.sub, jwt: jwt)
+            do {
+                let summary = try await cursorAPIClient.fetchUsageSummary(cookie: cookie)
+                let me = try? await cursorAPIClient.fetchAuthMe(cookie: cookie)
+                let stripe = try? await cursorAPIClient.fetchAuthStripe(cookie: cookie)
+                let email = me?.email ?? snapshot.cachedEmail ?? payload.sub
+                let record = CursorAccountRecord.make(email: email, summary: summary, me: me, stripe: stripe, subFromJWT: payload.sub, lastSeenAt: DateFormats.currentLocalTimestamp())
+                upsertCursorAccount(record)
+                cursorAccountStore.save(cursorAccounts)
+                cursorLimitsLastFetchedAt = Date()
+                lastError = nil
+            } catch CursorAPIError.unauthorized {
+                applyStaleCursorAccount(from: snapshot)
+            } catch {
+                lastError = error.localizedDescription
+            }
+        }
+    }
+
+    private func applyStaleCursorAccount(from snapshot: CursorAuthSnapshot) {
+        guard let email = snapshot.cachedEmail, !email.isEmpty else { return }
+        let previous = cursorAccounts.first { $0.id == email.lowercased() }
+        let record = CursorAccountRecord.staleFromCache(email: email, membershipType: snapshot.cachedMembershipType, subscriptionStatus: snapshot.cachedSubscriptionStatus, previous: previous, lastSeenAt: DateFormats.currentLocalTimestamp())
+        upsertCursorAccount(record)
+        cursorAccountStore.save(cursorAccounts)
+    }
+
+    private func upsertCursorAccount(_ record: CursorAccountRecord) {
+        if let index = cursorAccounts.firstIndex(where: { $0.id == record.id }) {
+            cursorAccounts[index] = record
+        } else {
+            cursorAccounts.append(record)
+        }
+        cursorAccounts.sort { $0.email.localizedCaseInsensitiveCompare($1.email) == .orderedAscending }
+    }
+
+    private func rebuildCursorUsageDashboard() {
+        cursorUsage = CursorUsageScanner.dashboard(from: cursorScanResult, window: cursorUsageWindow, now: displayNow)
+    }
+
+    private static func mergedCursorResult(_ existing: CursorUsageScanResult, with incremental: CursorUsageScanResult) -> CursorUsageScanResult {
+        guard !existing.records.isEmpty else { return incremental }
+        var byID = Dictionary(existing.records.map { ($0.id, $0) }, uniquingKeysWith: { _, new in new })
+        for record in incremental.records { byID[record.id] = record }
+        var result = CursorUsageScanResult()
+        result.records = byID.values.sorted { ($0.lastActivity ?? .distantPast) > ($1.lastActivity ?? .distantPast) }
+        result.summary = incremental.summary
+        return result
+    }
+
     func startOwnServerAndRefresh() {
         Task {
             await startServerAndRefresh(endpointText: AppPreferences.privateEndpoint)
@@ -473,6 +598,8 @@ final class AccountTrackerViewModel: ObservableObject {
             while !Task.isCancelled {
                 try? await Task.sleep(nanoseconds: UInt64(refreshIntervalSeconds * 1_000_000_000))
                 await self?.refreshLiveClient()
+                await self?.refreshCursorUsage()
+                await self?.refreshCursorLimits()
             }
         }
     }

@@ -4,6 +4,7 @@ struct AppPreferences {
     private enum Keys {
         static let endpoint = "codexAccountTracker.endpoint"
         static let openAIAPIUsageWindow = "codexAccountTracker.openAIAPIUsageWindow"
+        static let cursorUsageWindow = "codexAccountTracker.cursorUsageWindow"
         static let claudeCodeFoundryBackfillDone = "codexAccountTracker.claudeCodeFoundryBackfillDone"
         static let claudeCodeProjectRootBackfillDone = "codexAccountTracker.claudeCodeProjectRootBackfillDone.v1"
         static let openAICodexForkReplayBackfillDone = "codexAccountTracker.openAICodexForkReplayBackfillDone.v5"
@@ -31,6 +32,19 @@ struct AppPreferences {
         }
         set {
             UserDefaults.standard.set(newValue.rawValue, forKey: Keys.openAIAPIUsageWindow)
+        }
+    }
+
+    /// Persisted Today / 24h / 7d / All default for the Cursor usage table.
+    static var cursorUsageWindow: CursorUsageTimeWindow {
+        get {
+            guard let rawValue = UserDefaults.standard.string(forKey: Keys.cursorUsageWindow),
+                  let window = CursorUsageTimeWindow(rawValue: rawValue)
+            else { return .today }
+            return window
+        }
+        set {
+            UserDefaults.standard.set(newValue.rawValue, forKey: Keys.cursorUsageWindow)
         }
     }
 

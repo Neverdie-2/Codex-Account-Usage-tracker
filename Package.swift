@@ -17,7 +17,8 @@ let package = Package(
         .testTarget(
             name: "CodexAccountTrackerTests",
             dependencies: ["CodexAccountTracker"],
-            path: "Tests/CodexAccountTrackerTests"
+            path: "Tests/CodexAccountTrackerTests",
+            resources: [.copy("Fixtures")]
         )
     ]
 )

@@ -17,6 +17,8 @@ struct ContentView: View {
                         OpenAIUsageSectionView()
                         ClaudeCodeUsageSectionView()
                         LMStudioUsageSectionView()
+                        CursorLimitsSectionView()
+                        CursorUsageSectionView()
                     }
                     .padding(20)
                 }
@@ -42,6 +44,8 @@ struct ContentView: View {
                         OpenAIUsageSectionView()
                         ClaudeCodeUsageSectionView()
                         LMStudioUsageSectionView()
+                        CursorLimitsSectionView()
+                        CursorUsageSectionView()
                     }
                     .padding(20)
                 }

@@ -1,0 +1,15 @@
+{ "allComposers": [
+  { "type":"head", "composerId":"11111111-2222-3333-4444-555555555555",
+    "createdAt":1750405404081, "lastUpdatedAt":1750409004081,
+    "unifiedMode":"agent", "forceMode":"agent",
+    "name":"Refactor auth module", "subtitle":"",
+    "totalLinesAdded":128, "totalLinesRemoved":17, "filesChangedCount":4,
+    "contextUsagePercent":42.5,
+    "workspaceIdentifier":{ "id":"ws_abc", "uri":{ "path":"/Users/me/Desktop/MyProject" } } },
+  { "type":"head", "composerId":"aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",
+    "createdAt":1749000000000, "lastUpdatedAt":1749000600000,
+    "unifiedMode":"chat", "forceMode":null,
+    "name":"", "subtitle":"quick question",
+    "totalLinesAdded":0, "totalLinesRemoved":0, "filesChangedCount":0,
+    "contextUsagePercent":5.0, "workspaceIdentifier":null }
+] }

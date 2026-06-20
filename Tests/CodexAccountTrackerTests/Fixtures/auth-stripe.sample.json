@@ -1,0 +1,4 @@
+{ "membershipType":"free", "paymentId":null, "subscriptionStatus":"canceled",
+  "verifiedStudent":false, "trialEligible":false, "trialLengthDays":0,
+  "isOnStudentPlan":false, "isOnBillableAuto":false, "customerBalance":0,
+  "isYearlyPlan":false, "pendingCancellationDate":null, "individualMembershipType":"free" }
