@@ -98,6 +98,7 @@ final class AccountTrackerViewModel: ObservableObject {
             if oldValue != endpointText {
                 stopLiveMonitoring()
                 stopOwnServer()
+                resumeManagedServer()
             }
         }
     }
@@ -134,6 +135,10 @@ final class AccountTrackerViewModel: ObservableObject {
     private var isManagingServerLifecycle = false
     private var isStartingLiveMonitoring = false
     private var isRecoveringAuthChange = false
+    private var restartPolicy = ManagedServerRestartPolicy()
+    /// Set once the managed server has crash-looped past the policy's limit;
+    /// suppresses all auto-restart until a user action re-engages it.
+    private var managedServerGaveUp = false
     private var shouldRebuildAzureUsageCache = false
     private var shouldRebuildOpenAIUsageCache = false
     private var shouldRebuildClaudeCodeUsageCache = false
@@ -230,14 +235,20 @@ final class AccountTrackerViewModel: ObservableObject {
             guard !Self.isRoutineServerOutput(output) else { return }
             self?.lastError = output
         }
-        server.onTermination = { [weak self] endpoint in
-            guard self?.runningServerEndpoint == endpoint?.absoluteString else { return }
-            self?.runningServerEndpoint = nil
-            guard self?.isManagingServerLifecycle != true else { return }
-            if self?.shouldLiveMonitor == true, self?.shouldAutoManageServer == true {
-                self?.statusText = "Codex server stopped"
-                self?.lastError = "The tracker app-server stopped. Restarting it automatically."
-                self?.scheduleLiveReconnect(after: 1)
+        server.onTermination = { [weak self] endpoint, uptime in
+            guard let self else { return }
+            guard self.runningServerEndpoint == endpoint?.absoluteString else { return }
+            self.runningServerEndpoint = nil
+            guard self.isManagingServerLifecycle != true else { return }
+            guard self.shouldLiveMonitor, self.shouldAutoManageServer else { return }
+
+            switch self.restartPolicy.serverDied(uptime: uptime) {
+            case .retry(let delay):
+                self.statusText = "Codex server stopped"
+                self.lastError = "The tracker app-server stopped. Restarting it automatically."
+                self.scheduleLiveReconnect(after: delay)
+            case .giveUp:
+                self.enterManagedServerGaveUpState()
             }
         }
         statusText = accounts.isEmpty ? "Idle" : "Saved"
@@ -258,7 +269,15 @@ final class AccountTrackerViewModel: ObservableObject {
 
     func refreshNow() {
         Task {
-            await refreshOnce(startOwnServer: false)
+            // If auto-restart gave up on a crash-looping server, Refresh is the
+            // user's "try again" — re-engage live monitoring instead of a
+            // one-shot fetch that would just fail against the dead server.
+            if managedServerGaveUp, shouldAutoManageServer {
+                resumeManagedServer()
+                await startLiveMonitoring()
+            } else {
+                await refreshOnce(startOwnServer: false)
+            }
         }
     }
 
@@ -423,6 +442,7 @@ final class AccountTrackerViewModel: ObservableObject {
 
     func startOwnServerAndRefresh() {
         Task {
+            resumeManagedServer()
             await startServerAndRefresh(endpointText: AppPreferences.privateEndpoint)
         }
     }
@@ -432,6 +452,7 @@ final class AccountTrackerViewModel: ObservableObject {
             if isLiveMonitoring {
                 stopLiveMonitoring()
             } else {
+                resumeManagedServer()
                 await startLiveMonitoring()
             }
         }
@@ -890,6 +911,7 @@ final class AccountTrackerViewModel: ObservableObject {
 
         do {
             client = try await connectClient(enableNotifications: true)
+            markManagedServerHealthy()
             isLiveMonitoring = true
             statusText = "Live"
             await refreshLiveClient()
@@ -964,6 +986,7 @@ final class AccountTrackerViewModel: ObservableObject {
 
     private func startServerIfAutoManaged() async {
         guard shouldAutoManageServer else { return }
+        guard !managedServerGaveUp else { return }
         guard !server.isRunning else {
             runningServerEndpoint = server.endpoint?.absoluteString
             return
@@ -1026,8 +1049,38 @@ final class AccountTrackerViewModel: ObservableObject {
         scheduleLiveReconnect()
     }
 
+    /// Stop auto-restarting a server that keeps crashing on launch. The loop is
+    /// paused (no reconnect, no refresh timer) with an actionable message until a
+    /// user action calls `resumeManagedServer()`.
+    private func enterManagedServerGaveUpState() {
+        managedServerGaveUp = true
+        reconnectTask?.cancel()
+        reconnectTask = nil
+        refreshTask?.cancel()
+        refreshTask = nil
+        client?.disconnect()
+        client = nil
+        isLiveMonitoring = false
+        statusText = "Codex server unavailable"
+        lastError = "The Codex app-server kept exiting right after launch, so the tracker paused auto-restart. Your `codex` CLI may be broken — run `codex --version` in a terminal; if it errors, reinstall Codex. Then press Refresh."
+    }
+
+    /// The managed server came up and we connected — clear crash-loop state.
+    private func markManagedServerHealthy() {
+        guard shouldAutoManageServer else { return }
+        restartPolicy.serverBecameHealthy()
+        managedServerGaveUp = false
+    }
+
+    /// Re-enable auto-restart after a give-up (called from user actions).
+    private func resumeManagedServer() {
+        restartPolicy.reset()
+        managedServerGaveUp = false
+    }
+
     private func scheduleLiveReconnect(after delay: TimeInterval = 2) {
         guard shouldLiveMonitor else { return }
+        guard !managedServerGaveUp else { return }
         guard reconnectTask == nil else { return }
 
         reconnectTask = Task { [weak self] in
@@ -1230,12 +1283,23 @@ final class AccountTrackerViewModel: ObservableObject {
     private func recoverLiveMonitorAfterConnectFailure(_ originalError: Error) async -> Bool {
         guard let endpointURL else { return false }
 
+        // The managed server already crash-looped past the limit — don't spawn a
+        // competing server; the give-up state already surfaced the fix.
+        guard !managedServerGaveUp else { return true }
+
+        // If the server already died, its termination handler owns the restart
+        // decision (backoff or give-up). Don't start a second doomed server here.
+        if !server.isRunning, reconnectTask != nil {
+            return true
+        }
+
         statusText = "Restarting Codex server..."
         lastError = "Could not reconnect to the tracker app-server. Restarting it automatically."
         await restartManagedServer(endpoint: endpointURL)
 
         do {
             let liveClient = try await connectClient(enableNotifications: true)
+            markManagedServerHealthy()
             client = liveClient
             isLiveMonitoring = true
             try await fetchAndPersist(using: liveClient)

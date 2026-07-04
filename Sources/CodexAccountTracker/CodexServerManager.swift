@@ -3,10 +3,14 @@ import Foundation
 final class CodexServerManager {
     private var process: Process?
     private var outputPipe: Pipe?
+    private var startedAt: Date?
     private(set) var endpoint: URL?
 
     var onOutput: ((String) -> Void)?
-    var onTermination: ((URL?) -> Void)?
+    /// Fired when the managed server terminates. The second argument is how many
+    /// seconds the process stayed alive — a near-zero value means it crashed on
+    /// launch (e.g. a broken `codex` install), which the caller uses to back off.
+    var onTermination: ((URL?, TimeInterval) -> Void)?
 
     var isRunning: Bool {
         process?.isRunning == true
@@ -36,8 +40,9 @@ final class CodexServerManager {
             DispatchQueue.main.async {
                 guard let self, let process, self.process === process else { return }
                 let endpoint = self.endpoint
+                let uptime = self.startedAt.map { Date().timeIntervalSince($0) } ?? 0
                 self.clearProcessState()
-                self.onTermination?(endpoint)
+                self.onTermination?(endpoint, uptime)
             }
         }
         output.fileHandleForReading.readabilityHandler = { [weak self] handle in
@@ -54,6 +59,7 @@ final class CodexServerManager {
             self.process = process
             self.outputPipe = output
             self.endpoint = endpoint
+            self.startedAt = Date()
         } catch {
             onOutput?("Failed to start codex app-server: \(error.localizedDescription)")
         }
@@ -86,6 +92,7 @@ final class CodexServerManager {
         process = nil
         outputPipe = nil
         endpoint = nil
+        startedAt = nil
     }
 
     private func terminateChildren(of process: Process?) {
