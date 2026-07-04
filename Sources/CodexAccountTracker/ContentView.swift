@@ -16,6 +16,7 @@ struct ContentView: View {
                         AzureUsageSectionView()
                         OpenAIUsageSectionView()
                         ClaudeCodeUsageSectionView()
+                        ClaudeAzureUsageSectionView()
                         LMStudioUsageSectionView()
                     }
                     .padding(20)
@@ -41,6 +42,7 @@ struct ContentView: View {
                         AzureUsageSectionView()
                         OpenAIUsageSectionView()
                         ClaudeCodeUsageSectionView()
+                        ClaudeAzureUsageSectionView()
                         LMStudioUsageSectionView()
                     }
                     .padding(20)
@@ -644,6 +646,27 @@ private struct LMStudioUsageSectionView: View {
                 "\(group.endpoint) • \(group.deployment)"
             },
             refresh: viewModel.refreshLMStudioUsage
+        )
+    }
+}
+
+private struct ClaudeAzureUsageSectionView: View {
+    @EnvironmentObject private var viewModel: AccountTrackerViewModel
+
+    var body: some View {
+        CodexLogUsageSectionView(
+            title: "Claude Azure Usage",
+            subtitle: "Per-account usage from the local LiteLLM gateway — best02 / ffola / zelen. Table request/token counts follow the window; the headline count is lifetime.",
+            dashboard: viewModel.claudeAzureUsage,
+            isRefreshing: viewModel.isClaudeAzureRefreshing,
+            lastScannedAt: viewModel.claudeAzureLastScannedAt,
+            scanMode: $viewModel.claudeAzureUsageScanMode,
+            customStartDate: $viewModel.claudeAzureCustomStartDate,
+            sessionCounterLabel: CodexLogUsageProvider.claudeAzure.sessionCounterLabel,
+            endpointTableTitle: "By account",
+            emptyText: "No Claude Azure requests logged yet. Use claude-azure, then click Refresh.",
+            endpointLabel: { group in group.resource },   // account name only
+            refresh: viewModel.refreshClaudeAzureUsage
         )
     }
 }

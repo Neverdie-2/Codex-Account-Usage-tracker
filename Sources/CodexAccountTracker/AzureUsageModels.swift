@@ -90,6 +90,7 @@ enum CodexLogUsageProvider: String, Equatable, Codable {
     case openai
     case claudeCode = "claude-code"
     case lmStudio = "lm-studio"
+    case claudeAzure = "claude-azure"
 
     var displayName: String {
         switch self {
@@ -97,6 +98,7 @@ enum CodexLogUsageProvider: String, Equatable, Codable {
         case .openai: return "Codex"
         case .claudeCode: return "Claude Code"
         case .lmStudio: return "LM Studio"
+        case .claudeAzure: return "Claude Azure"
         }
     }
 
@@ -106,6 +108,7 @@ enum CodexLogUsageProvider: String, Equatable, Codable {
         case .openai: return "Codex sessions"
         case .claudeCode: return "Claude Code sessions"
         case .lmStudio: return "LM Studio chats"
+        case .claudeAzure: return "Claude Azure requests"
         }
     }
 
@@ -114,7 +117,7 @@ enum CodexLogUsageProvider: String, Equatable, Codable {
     /// cloud model instead of an actual spend.
     var costLabel: String {
         switch self {
-        case .azure, .openai, .claudeCode: return "Est. cost"
+        case .azure, .openai, .claudeCode, .claudeAzure: return "Est. cost"
         case .lmStudio: return "Est. saved"
         }
     }
@@ -122,7 +125,7 @@ enum CodexLogUsageProvider: String, Equatable, Codable {
     /// Compact form of `costLabel` for table column headers and report rows.
     var costShortLabel: String {
         switch self {
-        case .azure, .openai, .claudeCode: return "Est."
+        case .azure, .openai, .claudeCode, .claudeAzure: return "Est."
         case .lmStudio: return "Saved"
         }
     }
@@ -133,7 +136,7 @@ enum CodexLogUsageProvider: String, Equatable, Codable {
             return "Azure endpoint/resource could not be reliably discovered from local logs or safe config metadata; grouped as unknown endpoint."
         case .openai:
             return "OpenAI Codex usage excludes Azure sessions; Azure usage remains in the separate Azure dashboard."
-        case .claudeCode, .lmStudio:
+        case .claudeCode, .lmStudio, .claudeAzure:
             return ""
         }
     }
@@ -395,7 +398,7 @@ struct AzureModelPricing: Equatable, Codable {
             )
         }
 
-        if provider == .claudeCode || normalized.contains("claude-") {
+        if provider == .claudeCode || provider == .claudeAzure || normalized.contains("claude-") {
             if normalized.contains("fable") {
                 return AzureModelPricing(
                     modelPattern: "claude-fable-5",
@@ -452,7 +455,7 @@ struct AzureModelPricing: Equatable, Codable {
                     isKnown: true
                 )
             }
-            if provider == .claudeCode {
+            if provider == .claudeCode || provider == .claudeAzure {
                 return AzureModelPricing(
                     modelPattern: model ?? "claude-unknown",
                     displayName: "Unknown Claude pricing",
