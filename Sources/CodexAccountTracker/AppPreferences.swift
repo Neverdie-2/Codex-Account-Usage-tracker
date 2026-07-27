@@ -8,6 +8,7 @@ struct AppPreferences {
         static let claudeCodeProjectRootBackfillDone = "codexAccountTracker.claudeCodeProjectRootBackfillDone.v1"
         static let openAICodexForkReplayBackfillDone = "codexAccountTracker.openAICodexForkReplayBackfillDone.v5"
         static let azureCodexForkReplayBackfillDone = "codexAccountTracker.azureCodexForkReplayBackfillDone.v5"
+        static let collapsedSections = "codexAccountTracker.collapsedSections"
     }
 
     static let privateEndpoint = "ws://127.0.0.1:14567"
@@ -63,5 +64,12 @@ struct AppPreferences {
     static var azureCodexForkReplayBackfillDone: Bool {
         get { UserDefaults.standard.bool(forKey: Keys.azureCodexForkReplayBackfillDone) }
         set { UserDefaults.standard.set(newValue, forKey: Keys.azureCodexForkReplayBackfillDone) }
+    }
+
+    /// Ids of the UI sections the user has collapsed. Persisted so collapse state
+    /// survives app relaunches. Stored as a plain string array in UserDefaults.
+    static var collapsedSections: Set<String> {
+        get { Set(UserDefaults.standard.stringArray(forKey: Keys.collapsedSections) ?? []) }
+        set { UserDefaults.standard.set(Array(newValue), forKey: Keys.collapsedSections) }
     }
 }

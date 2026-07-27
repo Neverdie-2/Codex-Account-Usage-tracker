@@ -25,18 +25,38 @@ struct ContentView: View {
             } else {
                 ScrollView {
                     LazyVStack(spacing: 14) {
-                        ForEach(viewModel.accounts) { account in
-                            AccountCardView(
-                                account: account,
-                                displayNow: viewModel.displayNow,
-                                isActive: account.email.caseInsensitiveCompare(viewModel.activeEmail ?? "") == .orderedSame,
-                                onExpirationChange: { value in
-                                    viewModel.updateSubscriptionExpiration(email: account.email, value: value)
-                                },
-                                onDelete: {
-                                    viewModel.deleteAccount(email: account.email)
-                                }
-                            )
+                        Button {
+                            withAnimation(.easeInOut(duration: 0.18)) {
+                                viewModel.toggleSectionCollapsed(AccountTrackerViewModel.CollapsibleSection.accounts)
+                            }
+                        } label: {
+                            HStack(spacing: 8) {
+                                CollapseChevron(isCollapsed: viewModel.isSectionCollapsed(AccountTrackerViewModel.CollapsibleSection.accounts))
+                                Text("Accounts")
+                                    .font(.headline)
+                                Text("(\(viewModel.accounts.count))")
+                                    .font(.subheadline)
+                                    .foregroundStyle(.secondary)
+                                Spacer()
+                            }
+                            .contentShape(Rectangle())
+                        }
+                        .buttonStyle(.plain)
+
+                        if !viewModel.isSectionCollapsed(AccountTrackerViewModel.CollapsibleSection.accounts) {
+                            ForEach(viewModel.accounts) { account in
+                                AccountCardView(
+                                    account: account,
+                                    displayNow: viewModel.displayNow,
+                                    isActive: account.email.caseInsensitiveCompare(viewModel.activeEmail ?? "") == .orderedSame,
+                                    onExpirationChange: { value in
+                                        viewModel.updateSubscriptionExpiration(email: account.email, value: value)
+                                    },
+                                    onDelete: {
+                                        viewModel.deleteAccount(email: account.email)
+                                    }
+                                )
+                            }
                         }
 
                         AzureUsageSectionView()
@@ -101,6 +121,18 @@ private struct HeaderView: View {
             }
 
             Button {
+                withAnimation(.easeInOut(duration: 0.18)) {
+                    viewModel.toggleCollapseAllSections()
+                }
+            } label: {
+                Label(
+                    viewModel.areAllSectionsCollapsed ? "Expand All" : "Collapse All",
+                    systemImage: viewModel.areAllSectionsCollapsed ? "rectangle.expand.vertical" : "rectangle.compress.vertical"
+                )
+            }
+            .headerButtonSizing()
+
+            Button {
                 viewModel.refreshNow()
             } label: {
                 Label("Refresh", systemImage: "arrow.clockwise")
@@ -140,6 +172,20 @@ private extension View {
             .labelStyle(.titleAndIcon)
             .lineLimit(1)
             .controlSize(.regular)
+    }
+}
+
+/// Rotating disclosure chevron shared by the account group + usage section headers.
+/// Points right when collapsed, down (90°) when expanded — matches the app's
+/// existing chevron idiom.
+private struct CollapseChevron: View {
+    let isCollapsed: Bool
+
+    var body: some View {
+        Image(systemName: "chevron.right")
+            .font(.system(size: 12, weight: .semibold))
+            .foregroundStyle(.secondary)
+            .rotationEffect(.degrees(isCollapsed ? 0 : 90))
     }
 }
 
@@ -574,7 +620,13 @@ private struct AzureUsageSectionView: View {
                 let resource = group.resource == AzureUsageScanner.unknownResource ? "resource unknown" : group.resource
                 return "\(endpoint) • \(resource) • \(group.deployment)"
             },
-            refresh: viewModel.refreshAzureUsage
+            refresh: viewModel.refreshAzureUsage,
+            isCollapsed: viewModel.isSectionCollapsed(AccountTrackerViewModel.CollapsibleSection.azureUsage),
+            onToggleCollapse: {
+                withAnimation(.easeInOut(duration: 0.18)) {
+                    viewModel.toggleSectionCollapsed(AccountTrackerViewModel.CollapsibleSection.azureUsage)
+                }
+            }
         )
     }
 }
@@ -597,7 +649,13 @@ private struct OpenAIUsageSectionView: View {
             endpointLabel: { group in
                 "\(group.endpoint) • \(group.deployment)"
             },
-            refresh: viewModel.refreshOpenAIUsage
+            refresh: viewModel.refreshOpenAIUsage,
+            isCollapsed: viewModel.isSectionCollapsed(AccountTrackerViewModel.CollapsibleSection.openAIUsage),
+            onToggleCollapse: {
+                withAnimation(.easeInOut(duration: 0.18)) {
+                    viewModel.toggleSectionCollapsed(AccountTrackerViewModel.CollapsibleSection.openAIUsage)
+                }
+            }
         )
     }
 }
@@ -620,7 +678,13 @@ private struct ClaudeCodeUsageSectionView: View {
             endpointLabel: { group in
                 "\(group.endpoint) • \(group.deployment)"
             },
-            refresh: viewModel.refreshClaudeCodeUsage
+            refresh: viewModel.refreshClaudeCodeUsage,
+            isCollapsed: viewModel.isSectionCollapsed(AccountTrackerViewModel.CollapsibleSection.claudeCodeUsage),
+            onToggleCollapse: {
+                withAnimation(.easeInOut(duration: 0.18)) {
+                    viewModel.toggleSectionCollapsed(AccountTrackerViewModel.CollapsibleSection.claudeCodeUsage)
+                }
+            }
         )
     }
 }
@@ -645,7 +709,13 @@ private struct LMStudioUsageSectionView: View {
             endpointLabel: { group in
                 "\(group.endpoint) • \(group.deployment)"
             },
-            refresh: viewModel.refreshLMStudioUsage
+            refresh: viewModel.refreshLMStudioUsage,
+            isCollapsed: viewModel.isSectionCollapsed(AccountTrackerViewModel.CollapsibleSection.lmStudioUsage),
+            onToggleCollapse: {
+                withAnimation(.easeInOut(duration: 0.18)) {
+                    viewModel.toggleSectionCollapsed(AccountTrackerViewModel.CollapsibleSection.lmStudioUsage)
+                }
+            }
         )
     }
 }
@@ -666,7 +736,13 @@ private struct ClaudeAzureUsageSectionView: View {
             endpointTableTitle: "By account",
             emptyText: "No Claude Azure requests logged yet. Use claude-azure, then click Refresh.",
             endpointLabel: { group in group.resource },   // account name only
-            refresh: viewModel.refreshClaudeAzureUsage
+            refresh: viewModel.refreshClaudeAzureUsage,
+            isCollapsed: viewModel.isSectionCollapsed(AccountTrackerViewModel.CollapsibleSection.claudeAzureUsage),
+            onToggleCollapse: {
+                withAnimation(.easeInOut(duration: 0.18)) {
+                    viewModel.toggleSectionCollapsed(AccountTrackerViewModel.CollapsibleSection.claudeAzureUsage)
+                }
+            }
         )
     }
 }
@@ -687,6 +763,8 @@ private struct CodexLogUsageSectionView: View {
     let emptyText: String
     let endpointLabel: (AzureUsageGroup) -> String
     let refresh: () -> Void
+    let isCollapsed: Bool
+    let onToggleCollapse: () -> Void
 
     init(
         title: String,
@@ -702,7 +780,9 @@ private struct CodexLogUsageSectionView: View {
         endpointTableTitle: String,
         emptyText: String = "No token events counted for this window",
         endpointLabel: @escaping (AzureUsageGroup) -> String,
-        refresh: @escaping () -> Void
+        refresh: @escaping () -> Void,
+        isCollapsed: Bool = false,
+        onToggleCollapse: @escaping () -> Void = {}
     ) {
         self.title = title
         self.subtitle = subtitle
@@ -719,6 +799,8 @@ private struct CodexLogUsageSectionView: View {
         self.emptyText = emptyText
         self.endpointLabel = endpointLabel
         self.refresh = refresh
+        self.isCollapsed = isCollapsed
+        self.onToggleCollapse = onToggleCollapse
     }
 
     init(
@@ -735,7 +817,9 @@ private struct CodexLogUsageSectionView: View {
         endpointTableTitle: String,
         emptyText: String,
         endpointLabel: @escaping (AzureUsageGroup) -> String,
-        refresh: @escaping () -> Void
+        refresh: @escaping () -> Void,
+        isCollapsed: Bool = false,
+        onToggleCollapse: @escaping () -> Void = {}
     ) {
         self.title = title
         self.subtitle = subtitle
@@ -752,118 +836,133 @@ private struct CodexLogUsageSectionView: View {
         self.emptyText = emptyText
         self.endpointLabel = endpointLabel
         self.refresh = refresh
+        self.isCollapsed = isCollapsed
+        self.onToggleCollapse = onToggleCollapse
     }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
-            HStack(alignment: .firstTextBaseline, spacing: 12) {
-                VStack(alignment: .leading, spacing: 5) {
-                    Text(title)
-                        .font(.headline)
-                    Text(subtitle)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
+            HStack(alignment: .center, spacing: 12) {
+                Button {
+                    onToggleCollapse()
+                } label: {
+                    HStack(alignment: .center, spacing: 10) {
+                        CollapseChevron(isCollapsed: isCollapsed)
+                        VStack(alignment: .leading, spacing: 5) {
+                            Text(title)
+                                .font(.headline)
+                            Text(subtitle)
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+                    .contentShape(Rectangle())
                 }
+                .buttonStyle(.plain)
 
                 Spacer()
 
-                if let window {
-                    Picker("Window", selection: window) {
-                        ForEach(AzureUsageTimeWindow.allCases) { window in
-                            Text(window.label).tag(window)
+                if !isCollapsed {
+                    if let window {
+                        Picker("Window", selection: window) {
+                            ForEach(AzureUsageTimeWindow.allCases) { window in
+                                Text(window.label).tag(window)
+                            }
                         }
+                        .labelsHidden()
+                        .controlSize(.large)
+                        .frame(width: 167)
                     }
-                    .labelsHidden()
+
+                    if let scanMode {
+                        Picker("Window", selection: scanMode) {
+                            ForEach(CodexUsageScanMode.allCases) { mode in
+                                Text(mode.label).tag(mode)
+                            }
+                        }
+                        .labelsHidden()
+                        .controlSize(.large)
+                        .frame(width: 167)
+                    }
+
+                    if (window?.wrappedValue == .sinceDate || scanMode?.wrappedValue == .sinceDate), let customStartDate {
+                        DatePicker(
+                            "Since",
+                            selection: customStartDate,
+                            displayedComponents: .date
+                        )
+                        .datePickerStyle(.compact)
+                        .labelsHidden()
+                        .controlSize(.large)
+                        .frame(width: 133)
+                    }
+
+                    Button {
+                        refresh()
+                    } label: {
+                        Label(isRefreshing ? "Refreshing" : "Refresh", systemImage: "arrow.clockwise")
+                    }
                     .controlSize(.large)
-                    .frame(width: 167)
+                    .disabled(isRefreshing)
+                }
+            }
+
+            if !isCollapsed {
+                HStack(spacing: 12) {
+                    AzureUsageTotalPanel(title: "Input", value: dashboard.totals.inputTokens)
+                    AzureUsageTotalPanel(title: "Cached", value: dashboard.totals.cachedInputTokens)
+                    if dashboard.totals.cacheCreationInputTokens > 0 {
+                        AzureUsageTotalPanel(title: "Cache write", value: dashboard.totals.cacheCreationInputTokens)
+                    }
+                    AzureUsageTotalPanel(title: "Uncached", value: dashboard.totals.uncachedInputTokens)
+                    AzureUsageTotalPanel(title: "Output", value: dashboard.totals.outputTokens)
+                    AzureUsageTotalPanel(title: "Total", value: dashboard.totals.totalTokens)
+                    AzureUsageCostPanel(title: costLabel, value: dashboard.totals.estimatedCostUSD)
                 }
 
-                if let scanMode {
-                    Picker("Window", selection: scanMode) {
-                        ForEach(CodexUsageScanMode.allCases) { mode in
-                            Text(mode.label).tag(mode)
-                        }
-                    }
-                    .labelsHidden()
-                    .controlSize(.large)
-                    .frame(width: 167)
-                }
-
-                if (window?.wrappedValue == .sinceDate || scanMode?.wrappedValue == .sinceDate), let customStartDate {
-                    DatePicker(
-                        "Since",
-                        selection: customStartDate,
-                        displayedComponents: .date
+                HStack(alignment: .top, spacing: 12) {
+                    AzureUsageTableView(
+                        title: endpointTableTitle,
+                        groups: dashboard.byEndpointDeployment,
+                        emptyText: emptyText,
+                        costColumnTitle: costColumnTitle,
+                        label: endpointLabel
                     )
-                    .datePickerStyle(.compact)
-                    .labelsHidden()
-                    .controlSize(.large)
-                    .frame(width: 133)
+
+                    AzureUsageTableView(
+                        title: "By model",
+                        groups: dashboard.byModel,
+                        emptyText: emptyText,
+                        costColumnTitle: costColumnTitle,
+                        label: { group in
+                            "\(group.model) • \(group.pricing.rateSummary)"
+                        }
+                    )
                 }
 
-                Button {
-                    refresh()
-                } label: {
-                    Label(isRefreshing ? "Refreshing" : "Refresh", systemImage: "arrow.clockwise")
-                }
-                .controlSize(.large)
-                .disabled(isRefreshing)
-            }
-
-            HStack(spacing: 12) {
-                AzureUsageTotalPanel(title: "Input", value: dashboard.totals.inputTokens)
-                AzureUsageTotalPanel(title: "Cached", value: dashboard.totals.cachedInputTokens)
-                if dashboard.totals.cacheCreationInputTokens > 0 {
-                    AzureUsageTotalPanel(title: "Cache write", value: dashboard.totals.cacheCreationInputTokens)
-                }
-                AzureUsageTotalPanel(title: "Uncached", value: dashboard.totals.uncachedInputTokens)
-                AzureUsageTotalPanel(title: "Output", value: dashboard.totals.outputTokens)
-                AzureUsageTotalPanel(title: "Total", value: dashboard.totals.totalTokens)
-                AzureUsageCostPanel(title: costLabel, value: dashboard.totals.estimatedCostUSD)
-            }
-
-            HStack(alignment: .top, spacing: 12) {
-                AzureUsageTableView(
-                    title: endpointTableTitle,
-                    groups: dashboard.byEndpointDeployment,
+                AzureUsageProjectTableView(
+                    projects: dashboard.byProject,
                     emptyText: emptyText,
-                    costColumnTitle: costColumnTitle,
-                    label: endpointLabel
+                    costColumnTitle: costColumnTitle
                 )
 
-                AzureUsageTableView(
-                    title: "By model",
-                    groups: dashboard.byModel,
-                    emptyText: emptyText,
-                    costColumnTitle: costColumnTitle,
-                    label: { group in
-                        "\(group.model) • \(group.pricing.rateSummary)"
-                    }
+                Divider()
+                    .padding(.horizontal, 8)
+
+                AzureUsageScanStatsView(
+                    dashboard: dashboard,
+                    lastScannedAt: lastScannedAt,
+                    sessionCounterLabel: sessionCounterLabel
                 )
-            }
 
-            AzureUsageProjectTableView(
-                projects: dashboard.byProject,
-                emptyText: emptyText,
-                costColumnTitle: costColumnTitle
-            )
-
-            Divider()
-                .padding(.horizontal, 8)
-
-            AzureUsageScanStatsView(
-                dashboard: dashboard,
-                lastScannedAt: lastScannedAt,
-                sessionCounterLabel: sessionCounterLabel
-            )
-
-            if !dashboard.summary.warnings.isEmpty {
-                VStack(alignment: .leading, spacing: 6) {
-                    ForEach(dashboard.summary.warnings, id: \.self) { warning in
-                        Label(warning, systemImage: "exclamationmark.triangle")
-                            .font(AzureUsageLowerFont.hiddenCaption)
-                            .foregroundStyle(.secondary)
-                            .textSelection(.enabled)
+                if !dashboard.summary.warnings.isEmpty {
+                    VStack(alignment: .leading, spacing: 6) {
+                        ForEach(dashboard.summary.warnings, id: \.self) { warning in
+                            Label(warning, systemImage: "exclamationmark.triangle")
+                                .font(AzureUsageLowerFont.hiddenCaption)
+                                .foregroundStyle(.secondary)
+                                .textSelection(.enabled)
+                        }
                     }
                 }
             }
@@ -1149,25 +1248,41 @@ private struct AzureUsageProjectGroupSectionView: View {
     var costColumnTitle = "Est. $"
     var showsFooterDivider = false
 
+    /// The "By project" breakdown is collapsed by default so the dashboard leads
+    /// with the summary rather than a long project list.
+    @State private var isCollapsed = true
+
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
-            Text(title)
-                .font(AzureUsageLowerFont.tableTitle)
+            Button {
+                withAnimation(.easeInOut(duration: 0.15)) {
+                    isCollapsed.toggle()
+                }
+            } label: {
+                HStack(spacing: 6) {
+                    CollapseChevron(isCollapsed: isCollapsed)
+                    Text(title)
+                        .font(AzureUsageLowerFont.tableTitle)
+                }
+            }
+            .buttonStyle(.plain)
 
-            if projects.isEmpty {
-                Text(emptyText)
-                    .font(AzureUsageLowerFont.empty)
-                    .foregroundStyle(.secondary)
-                    .frame(maxWidth: .infinity, minHeight: 72, alignment: .center)
-            } else {
-                VStack(spacing: 0) {
-                    AzureUsageProjectHeaderRow(firstColumnTitle: firstColumnTitle, costColumnTitle: costColumnTitle)
-                    ForEach(projects.prefix(12)) { project in
-                        if project.id == projects.prefix(12).first?.id {
+            if !isCollapsed {
+                if projects.isEmpty {
+                    Text(emptyText)
+                        .font(AzureUsageLowerFont.empty)
+                        .foregroundStyle(.secondary)
+                        .frame(maxWidth: .infinity, minHeight: 72, alignment: .center)
+                } else {
+                    VStack(spacing: 0) {
+                        AzureUsageProjectHeaderRow(firstColumnTitle: firstColumnTitle, costColumnTitle: costColumnTitle)
+                        ForEach(projects.prefix(12)) { project in
+                            if project.id == projects.prefix(12).first?.id {
+                                Divider()
+                            }
+                            AzureUsageProjectDisclosureRow(project: project)
                             Divider()
                         }
-                        AzureUsageProjectDisclosureRow(project: project)
-                        Divider()
                     }
                 }
             }

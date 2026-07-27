@@ -29,6 +29,48 @@ final class AccountTrackerViewModel: ObservableObject {
     @Published private(set) var lmStudioLastScannedAt: Date?
     @Published private(set) var claudeAzureLastScannedAt: Date?
     @Published private(set) var openAIAPIBillingLastScannedAt: Date?
+
+    /// Which collapsible UI sections are currently collapsed. Persisted to
+    /// AppPreferences so the state survives relaunches.
+    @Published var collapsedSections: Set<String> = AppPreferences.collapsedSections {
+        didSet { AppPreferences.collapsedSections = collapsedSections }
+    }
+
+    /// Stable ids for every collapsible section, top to bottom (used by collapse-all).
+    enum CollapsibleSection {
+        static let accounts = "accounts"
+        static let azureUsage = "azureUsage"
+        static let openAIUsage = "openAIUsage"
+        static let claudeCodeUsage = "claudeCodeUsage"
+        static let claudeAzureUsage = "claudeAzureUsage"
+        static let lmStudioUsage = "lmStudioUsage"
+        static let all: [String] = [
+            accounts, azureUsage, openAIUsage, claudeCodeUsage, claudeAzureUsage, lmStudioUsage,
+        ]
+    }
+
+    func isSectionCollapsed(_ id: String) -> Bool { collapsedSections.contains(id) }
+
+    func toggleSectionCollapsed(_ id: String) {
+        if collapsedSections.contains(id) {
+            collapsedSections.remove(id)
+        } else {
+            collapsedSections.insert(id)
+        }
+    }
+
+    var areAllSectionsCollapsed: Bool {
+        CollapsibleSection.all.allSatisfy { collapsedSections.contains($0) }
+    }
+
+    /// Master toggle: collapse everything if anything is open, otherwise expand all.
+    func toggleCollapseAllSections() {
+        if areAllSectionsCollapsed {
+            collapsedSections = []
+        } else {
+            collapsedSections = Set(CollapsibleSection.all)
+        }
+    }
     @Published var openAIAdminKey: String {
         didSet {
             KeychainSecretStore.save(openAIAdminKey, account: Self.openAIAdminKeyAccount)
