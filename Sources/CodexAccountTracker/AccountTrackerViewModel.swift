@@ -410,6 +410,9 @@ final class AccountTrackerViewModel: ObservableObject {
                 AppPreferences.claudeCodeFoundryBackfillDone = true
             }
             rebuildClaudeCodeUsageDashboard()
+            // Fresh transcripts change which gateway requests can be attributed to a
+            // project, so refresh the Claude Azure "By project" breakdown too.
+            rebuildClaudeAzureUsageDashboard()
         }
     }
 
@@ -449,6 +452,9 @@ final class AccountTrackerViewModel: ObservableObject {
             claudeAzureLastScannedAt = scannedAt
             usageCacheStore.save(claudeAzureScanResult, scannedAt: scannedAt)
             rebuildClaudeAzureUsageDashboard()
+            // Newly-logged gateway requests may newly identify a transcript session as
+            // claude-azure, so rebuild Claude Code to keep those sessions excluded.
+            rebuildClaudeCodeUsageDashboard()
         }
     }
 
@@ -560,18 +566,23 @@ final class AccountTrackerViewModel: ObservableObject {
                 || !AppPreferences.claudeCodeProjectRootBackfillDone
         }
         desktopChatRecords = desktopChatStore.loadCachedRecords()
+
+        // Load the Claude Azure (gateway) cache BEFORE building either Claude dashboard:
+        // both dashboards depend on both scan results (Claude Code excludes gateway
+        // sessions; Claude Azure attributes requests to Claude Code projects), so the
+        // correlator must see gateway data on the very first render — otherwise nothing
+        // is excluded until the next background refresh completes.
+        if let claudeAzureCache = usageCacheStore.load(provider: .claudeAzure) {
+            claudeAzureScanResult = claudeAzureCache.result
+            claudeAzureLastScannedAt = claudeAzureCache.scannedAt
+        }
         rebuildClaudeCodeUsageDashboard()
+        rebuildClaudeAzureUsageDashboard()
 
         if let lmStudioCache = usageCacheStore.load(provider: .lmStudio) {
             lmStudioScanResult = lmStudioCache.result
             lmStudioLastScannedAt = lmStudioCache.scannedAt
             rebuildLMStudioUsageDashboard()
-        }
-
-        if let claudeAzureCache = usageCacheStore.load(provider: .claudeAzure) {
-            claudeAzureScanResult = claudeAzureCache.result
-            claudeAzureLastScannedAt = claudeAzureCache.scannedAt
-            rebuildClaudeAzureUsageDashboard()
         }
 
         if let apiBillingCache = openAIAPIBillingCacheStore.load() {
@@ -758,6 +769,16 @@ final class AccountTrackerViewModel: ObservableObject {
 
     private func rebuildClaudeCodeUsageDashboard() {
         var combined = claudeCodeScanResult
+        // A claude-azure (gateway) session is still Claude Code and writes a normal
+        // transcript here, so its usage is ALSO logged to the gateway and shown in the
+        // Claude Azure dashboard. Drop those sessions so they are not counted twice.
+        let correlator = ClaudeAzureTranscriptCorrelator(
+            claudeCodeRecords: claudeCodeScanResult.records,
+            gatewayRecords: claudeAzureScanResult.records
+        )
+        if !correlator.azureSessionIDs.isEmpty {
+            combined.records = combined.records.filter { !correlator.isAzureSession($0.sessionID) }
+        }
         let azureClaudeRecords = azureScanResult.records
             .filter { $0.model.lowercased().contains("claude") }
             .map { record -> AzureUsageRecord in
@@ -792,8 +813,27 @@ final class AccountTrackerViewModel: ObservableObject {
     }
 
     private func rebuildClaudeAzureUsageDashboard() {
+        // The gateway log has no project field, so attribute each request to the Claude
+        // Code session/project that made it (fingerprint + time correlation). Requests
+        // with no confident match land in an explicit "Unattributed" bucket.
+        let correlator = ClaudeAzureTranscriptCorrelator(
+            claudeCodeRecords: claudeCodeScanResult.records,
+            gatewayRecords: claudeAzureScanResult.records
+        )
+        var attributed = claudeAzureScanResult
+        attributed.records = attributed.records.map { record in
+            var record = record
+            if let project = correlator.attributedProject(for: record) {
+                record.projectPath = project.path
+                record.projectName = project.name
+            } else {
+                record.projectPath = ClaudeAzureTranscriptCorrelator.unattributedProjectPath
+                record.projectName = ClaudeAzureTranscriptCorrelator.unattributedProjectName
+            }
+            return record
+        }
         claudeAzureUsage = AzureUsageScanner.dashboard(
-            from: claudeAzureScanResult,
+            from: attributed,
             window: claudeAzureUsageScanMode.usageWindow,
             customStartDate: claudeAzureCustomStartDate,
             now: displayNow
