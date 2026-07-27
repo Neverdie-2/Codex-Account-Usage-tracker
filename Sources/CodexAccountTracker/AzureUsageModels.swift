@@ -411,11 +411,17 @@ struct AzureModelPricing: Equatable, Codable {
                 )
             }
             if normalized.contains("opus") {
-                let isLegacyOpus = normalized.contains("opus-4-1") || normalized == "claude-opus-4"
+                // Opus 3, Opus 4.0, and Opus 4.1 all bill at the legacy $15/$75 tier.
+                // Opus 4.5 through 4.8 dropped to $5/$25.
+                let isLegacyOpus = normalized.contains("opus-4-1")
+                    || normalized == "claude-opus-4"
+                    || normalized.contains("opus-3")
+                    || normalized.contains("3-opus")
+                    || normalized.contains("4-opus")
                 if isLegacyOpus {
                     return AzureModelPricing(
                         modelPattern: "claude-opus-4-1",
-                        displayName: "Claude Opus 4.1 (legacy rates)",
+                        displayName: "Claude Opus 4.1 / legacy (4.0, 3)",
                         inputPerMillionUSD: 15.00,
                         cachedInputPerMillionUSD: 1.50,
                         cacheWritePerMillionUSD: 18.75,
@@ -425,7 +431,7 @@ struct AzureModelPricing: Equatable, Codable {
                 }
                 return AzureModelPricing(
                     modelPattern: "claude-opus-4-5-plus",
-                    displayName: "Claude Opus 4.5+",
+                    displayName: "Claude Opus 4.5–4.8",
                     inputPerMillionUSD: 5.00,
                     cachedInputPerMillionUSD: 0.50,
                     cacheWritePerMillionUSD: 6.25,
@@ -434,9 +440,21 @@ struct AzureModelPricing: Equatable, Codable {
                 )
             }
             if normalized.contains("sonnet") {
+                // Sonnet 5 is cheaper than the 4.x line ($2/$10 vs $3/$15).
+                if normalized.contains("sonnet-5") {
+                    return AzureModelPricing(
+                        modelPattern: "claude-sonnet-5",
+                        displayName: "Claude Sonnet 5",
+                        inputPerMillionUSD: 2.00,
+                        cachedInputPerMillionUSD: 0.20,
+                        cacheWritePerMillionUSD: 2.50,
+                        outputPerMillionUSD: 10.00,
+                        isKnown: true
+                    )
+                }
                 return AzureModelPricing(
                     modelPattern: "claude-sonnet-4",
-                    displayName: "Claude Sonnet 4.x",
+                    displayName: "Claude Sonnet 4.x / 3.7",
                     inputPerMillionUSD: 3.00,
                     cachedInputPerMillionUSD: 0.30,
                     cacheWritePerMillionUSD: 3.75,
@@ -445,6 +463,17 @@ struct AzureModelPricing: Equatable, Codable {
                 )
             }
             if normalized.contains("haiku") {
+                if normalized.contains("haiku-3") || normalized.contains("3-haiku") {
+                    return AzureModelPricing(
+                        modelPattern: "claude-3-haiku",
+                        displayName: "Claude Haiku 3",
+                        inputPerMillionUSD: 0.25,
+                        cachedInputPerMillionUSD: 0.03,
+                        cacheWritePerMillionUSD: 0.30,
+                        outputPerMillionUSD: 1.25,
+                        isKnown: true
+                    )
+                }
                 return AzureModelPricing(
                     modelPattern: "claude-haiku-4-5",
                     displayName: "Claude Haiku 4.5",
@@ -468,12 +497,49 @@ struct AzureModelPricing: Equatable, Codable {
             }
         }
 
-        if normalized.contains("gpt-5-5-pro") {
+        if normalized.contains("gpt-5-6-terra") || normalized.contains("gpt-56-terra") {
+            return AzureModelPricing(
+                modelPattern: "gpt-5.6-terra",
+                displayName: "GPT-5.6 Terra",
+                inputPerMillionUSD: 2.50,
+                cachedInputPerMillionUSD: 0.25,
+                cacheWritePerMillionUSD: 3.125,
+                outputPerMillionUSD: 15.00,
+                isKnown: true
+            )
+        }
+
+        if normalized.contains("gpt-5-6-luna") || normalized.contains("gpt-56-luna") {
+            return AzureModelPricing(
+                modelPattern: "gpt-5.6-luna",
+                displayName: "GPT-5.6 Luna",
+                inputPerMillionUSD: 1.00,
+                cachedInputPerMillionUSD: 0.10,
+                cacheWritePerMillionUSD: 1.25,
+                outputPerMillionUSD: 6.00,
+                isKnown: true
+            )
+        }
+
+        // The bare `gpt-5.6` alias routes to Sol, the flagship tier, so it shares Sol's rates.
+        if normalized.contains("gpt-5-6") || normalized == "gpt-56" {
+            return AzureModelPricing(
+                modelPattern: "gpt-5.6-sol",
+                displayName: "GPT-5.6 Sol",
+                inputPerMillionUSD: 5.00,
+                cachedInputPerMillionUSD: 0.50,
+                cacheWritePerMillionUSD: 6.25,
+                outputPerMillionUSD: 30.00,
+                isKnown: true
+            )
+        }
+
+        if normalized.contains("gpt-5-5-pro") || normalized.contains("gpt-55-pro") {
             return AzureModelPricing(
                 modelPattern: "gpt-5.5-pro",
-                displayName: "GPT-5.5 pro estimate",
+                displayName: "GPT-5.5 pro",
                 inputPerMillionUSD: 30.00,
-                cachedInputPerMillionUSD: 30.00,
+                cachedInputPerMillionUSD: 3.00,
                 outputPerMillionUSD: 180.00,
                 isKnown: true
             )
@@ -482,7 +548,7 @@ struct AzureModelPricing: Equatable, Codable {
         if normalized == "gpt-55" || normalized.contains("gpt-5-5") {
             return AzureModelPricing(
                 modelPattern: "gpt-5.5",
-                displayName: "GPT-5.5 estimate",
+                displayName: "GPT-5.5",
                 inputPerMillionUSD: 5.00,
                 cachedInputPerMillionUSD: 0.50,
                 outputPerMillionUSD: 30.00,
@@ -490,13 +556,13 @@ struct AzureModelPricing: Equatable, Codable {
             )
         }
 
-        if normalized.contains("gpt-5-3-codex") || normalized.contains("gpt-53-codex") {
+        if normalized.contains("gpt-5-4-pro") || normalized.contains("gpt-54-pro") {
             return AzureModelPricing(
-                modelPattern: "gpt-5.3-codex",
-                displayName: "GPT-5.3 Codex estimate",
-                inputPerMillionUSD: 1.75,
-                cachedInputPerMillionUSD: 0.175,
-                outputPerMillionUSD: 14.00,
+                modelPattern: "gpt-5.4-pro",
+                displayName: "GPT-5.4 pro",
+                inputPerMillionUSD: 30.00,
+                cachedInputPerMillionUSD: 3.00,
+                outputPerMillionUSD: 180.00,
                 isKnown: true
             )
         }
@@ -504,7 +570,7 @@ struct AzureModelPricing: Equatable, Codable {
         if normalized.contains("gpt-5-4-mini") || normalized.contains("gpt-54-mini") {
             return AzureModelPricing(
                 modelPattern: "gpt-5.4-mini",
-                displayName: "GPT-5.4 mini estimate",
+                displayName: "GPT-5.4 mini",
                 inputPerMillionUSD: 0.75,
                 cachedInputPerMillionUSD: 0.075,
                 outputPerMillionUSD: 4.50,
@@ -512,10 +578,21 @@ struct AzureModelPricing: Equatable, Codable {
             )
         }
 
+        if normalized.contains("gpt-5-4-nano") || normalized.contains("gpt-54-nano") {
+            return AzureModelPricing(
+                modelPattern: "gpt-5.4-nano",
+                displayName: "GPT-5.4 nano",
+                inputPerMillionUSD: 0.20,
+                cachedInputPerMillionUSD: 0.02,
+                outputPerMillionUSD: 1.25,
+                isKnown: true
+            )
+        }
+
         if normalized.contains("gpt-5-4") || normalized.contains("gpt-54") {
             return AzureModelPricing(
                 modelPattern: "gpt-5.4",
-                displayName: "GPT-5.4 estimate",
+                displayName: "GPT-5.4",
                 inputPerMillionUSD: 2.50,
                 cachedInputPerMillionUSD: 0.25,
                 outputPerMillionUSD: 15.00,
@@ -523,10 +600,33 @@ struct AzureModelPricing: Equatable, Codable {
             )
         }
 
+        // GPT-5.3 (codex + chat variants) shares GPT-5.2 rates.
+        if normalized.contains("gpt-5-3") || normalized.contains("gpt-53") {
+            return AzureModelPricing(
+                modelPattern: "gpt-5.3",
+                displayName: "GPT-5.3",
+                inputPerMillionUSD: 1.75,
+                cachedInputPerMillionUSD: 0.175,
+                outputPerMillionUSD: 14.00,
+                isKnown: true
+            )
+        }
+
+        if normalized.contains("gpt-5-2-pro") || normalized.contains("gpt-52-pro") {
+            return AzureModelPricing(
+                modelPattern: "gpt-5.2-pro",
+                displayName: "GPT-5.2 pro",
+                inputPerMillionUSD: 21.00,
+                cachedInputPerMillionUSD: 2.10,
+                outputPerMillionUSD: 168.00,
+                isKnown: true
+            )
+        }
+
         if normalized.contains("gpt-5-2") || normalized.contains("gpt-52") {
             return AzureModelPricing(
                 modelPattern: "gpt-5.2",
-                displayName: "GPT-5.2 estimate",
+                displayName: "GPT-5.2",
                 inputPerMillionUSD: 1.75,
                 cachedInputPerMillionUSD: 0.175,
                 outputPerMillionUSD: 14.00,
@@ -545,10 +645,42 @@ struct AzureModelPricing: Equatable, Codable {
             )
         }
 
+        // GPT-5 / 5.1 base line and its mini/nano/pro tiers. All 5.2+ families
+        // are handled above, so only the 5.0/5.1 generation reaches here.
         if provider == .openai, normalized.contains("gpt-5") {
+            if normalized.contains("pro") {
+                return AzureModelPricing(
+                    modelPattern: "gpt-5-pro",
+                    displayName: "GPT-5 pro",
+                    inputPerMillionUSD: 15.00,
+                    cachedInputPerMillionUSD: 1.50,
+                    outputPerMillionUSD: 120.00,
+                    isKnown: true
+                )
+            }
+            if normalized.contains("mini") {
+                return AzureModelPricing(
+                    modelPattern: "gpt-5-mini",
+                    displayName: "GPT-5 mini",
+                    inputPerMillionUSD: 0.25,
+                    cachedInputPerMillionUSD: 0.025,
+                    outputPerMillionUSD: 2.00,
+                    isKnown: true
+                )
+            }
+            if normalized.contains("nano") {
+                return AzureModelPricing(
+                    modelPattern: "gpt-5-nano",
+                    displayName: "GPT-5 nano",
+                    inputPerMillionUSD: 0.05,
+                    cachedInputPerMillionUSD: 0.005,
+                    outputPerMillionUSD: 0.40,
+                    isKnown: true
+                )
+            }
             return AzureModelPricing(
                 modelPattern: "gpt-5",
-                displayName: "GPT-5 estimate",
+                displayName: "GPT-5 / 5.1",
                 inputPerMillionUSD: 1.25,
                 cachedInputPerMillionUSD: 0.125,
                 outputPerMillionUSD: 10.00,
