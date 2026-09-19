@@ -45,6 +45,21 @@ final class GPT56PricingTests: XCTestCase {
         XCTAssertEqual(dated.modelPattern, "gpt-5.6-terra")
     }
 
+    func testGPT6AstraRatesMatchOnBothCodexAndAzure() {
+        // OpenAI list price and Azure Foundry Global Standard are identical for Astra.
+        for provider in [CodexLogUsageProvider.openai, .azure] {
+            for name in ["gpt-6-astra", "gpt-6-astra-2026-09-03"] {
+                let astra = AzureModelPricing.defaultPricing(for: name, provider: provider)
+                XCTAssertTrue(astra.isKnown)
+                XCTAssertEqual(astra.modelPattern, "gpt-6-astra")
+                XCTAssertEqual(astra.inputPerMillionUSD, 10.00, accuracy: 0.0001)
+                XCTAssertEqual(astra.cachedInputPerMillionUSD, 1.00, accuracy: 0.0001)
+                XCTAssertEqual(astra.cacheWritePerMillionUSD ?? 0, 12.50, accuracy: 0.0001)
+                XCTAssertEqual(astra.outputPerMillionUSD, 50.00, accuracy: 0.0001)
+            }
+        }
+    }
+
     func testOlderGPT5FamiliesUnaffected() {
         XCTAssertEqual(AzureModelPricing.defaultPricing(for: "gpt-5.5", provider: .openai).modelPattern, "gpt-5.5")
         XCTAssertEqual(AzureModelPricing.defaultPricing(for: "gpt-5.4-mini", provider: .openai).modelPattern, "gpt-5.4-mini")

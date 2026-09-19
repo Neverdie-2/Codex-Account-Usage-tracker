@@ -1,7 +1,8 @@
 import Foundation
 
 final class ClaudeCodeUsageIndexStore {
-    static let currentVersion = 2
+    // v3: rows gained hasFinalUsage / contentCharacters for output-token estimation.
+    static let currentVersion = 3
 
     private let directoryURL: URL
     private let fileManager: FileManager
@@ -79,4 +80,10 @@ struct ClaudeCodeUsageIndexedRow: Codable, Equatable {
     var requestID: String?
     var isSidechain: Bool
     var isSubagent: Bool
+    /// `true` when the record carried a `stop_reason`, meaning its `output_tokens` is final.
+    /// `false` for `message_start` placeholder records, whose output count is a 1-5 token stub.
+    var hasFinalUsage: Bool
+    /// Characters of model-produced content (thinking + text + tool-call arguments), used to
+    /// estimate output tokens when `hasFinalUsage` is false.
+    var contentCharacters: Int
 }

@@ -6,9 +6,10 @@ struct AppPreferences {
         static let openAIAPIUsageWindow = "codexAccountTracker.openAIAPIUsageWindow"
         static let claudeCodeFoundryBackfillDone = "codexAccountTracker.claudeCodeFoundryBackfillDone"
         static let claudeCodeProjectRootBackfillDone = "codexAccountTracker.claudeCodeProjectRootBackfillDone.v1"
-        static let openAICodexForkReplayBackfillDone = "codexAccountTracker.openAICodexForkReplayBackfillDone.v5"
+        static let openAICodexForkReplayBackfillDone = "codexAccountTracker.openAICodexForkReplayBackfillDone.v6"
         static let azureCodexForkReplayBackfillDone = "codexAccountTracker.azureCodexForkReplayBackfillDone.v5"
         static let collapsedSections = "codexAccountTracker.collapsedSections"
+        static let usageHistoryCollapseDefaultsApplied = "codexAccountTracker.usageHistoryCollapseDefaultsApplied.v1"
     }
 
     static let privateEndpoint = "ws://127.0.0.1:14567"
@@ -58,6 +59,14 @@ struct AppPreferences {
         set { UserDefaults.standard.set(newValue, forKey: Keys.openAICodexForkReplayBackfillDone) }
     }
 
+    /// A loaded OpenAI cache must be rebuilt until the current scanner migration
+    /// has completed, including when that cache currently contains no records.
+    /// Keeping the decision pure makes the empty-cache migration behavior easy to
+    /// verify without constructing the live view model in tests.
+    static func shouldRebuildOpenAIUsageCache(hasLoadedCache: Bool, backfillDone: Bool) -> Bool {
+        hasLoadedCache && !backfillDone
+    }
+
     /// One-shot marker for scanner upgrades that changed local Codex indexing or
     /// fork replay suppression. Existing cached rows need a full rebuild once so
     /// copied pre-fork token rows are removed from Azure local usage.
@@ -71,5 +80,10 @@ struct AppPreferences {
     static var collapsedSections: Set<String> {
         get { Set(UserDefaults.standard.stringArray(forKey: Keys.collapsedSections) ?? []) }
         set { UserDefaults.standard.set(Array(newValue), forKey: Keys.collapsedSections) }
+    }
+
+    static var usageHistoryCollapseDefaultsApplied: Bool {
+        get { UserDefaults.standard.bool(forKey: Keys.usageHistoryCollapseDefaultsApplied) }
+        set { UserDefaults.standard.set(newValue, forKey: Keys.usageHistoryCollapseDefaultsApplied) }
     }
 }

@@ -349,6 +349,25 @@ struct AzureModelPricing: Equatable, Codable {
             .replacingOccurrences(of: "_", with: "-")
             .replacingOccurrences(of: ".", with: "-")
 
+        // DeepSeek (Azure AI Foundry, served through the gateway as claude-deepseek). Placed
+        // FIRST so it matches regardless of `provider` — the claude-azure store passes
+        // .claudeAzure, which would otherwise fall through to the "Unknown Claude pricing" ($0)
+        // branch. Rates = DeepSeek's public deepseek-chat reference ($0.27 in / $0.07 cached /
+        // $1.10 out). PROVISIONAL: the host is raising prices — revisit and bump these. Token
+        // counts are the gateway's local-tokenizer ESTIMATE (Azure returns usage:null), so the
+        // cost shown here is an estimate too.
+        if normalized.contains("deepseek") {
+            return AzureModelPricing(
+                modelPattern: "deepseek-v4-flash",
+                displayName: "DeepSeek v4-flash (Azure Foundry)",
+                inputPerMillionUSD: 0.27,
+                cachedInputPerMillionUSD: 0.07,
+                cacheWritePerMillionUSD: nil,
+                outputPerMillionUSD: 1.10,
+                isKnown: true
+            )
+        }
+
         if provider == .lmStudio {
             // These are community fine-tunes with no API pricing of their own.
             // Estimate savings against the OpenRouter list price of the base
@@ -495,6 +514,24 @@ struct AzureModelPricing: Equatable, Codable {
                     isKnown: false
                 )
             }
+        }
+
+        // GPT-6 Astra, short-context Standard rates. OpenAI's list price and Azure Foundry's
+        // Global Standard price are identical, so one entry serves both the Codex and Azure
+        // dashboards. (Azure US Data Zone deployments bill 10% higher: $11 / $1.10 / $13.75 / $55.)
+        // The long-context tier ($20 in / $75 out) only applies above 272K input tokens, which
+        // Codex's 271K context window never reaches. Codex logs carry no cache-write count, so
+        // uncached input is priced at the $10 input rate, as for GPT-5.6.
+        if normalized.contains("gpt-6-astra") || normalized.contains("gpt6-astra") || normalized == "gpt-6" {
+            return AzureModelPricing(
+                modelPattern: "gpt-6-astra",
+                displayName: "GPT-6 Astra",
+                inputPerMillionUSD: 10.00,
+                cachedInputPerMillionUSD: 1.00,
+                cacheWritePerMillionUSD: 12.50,
+                outputPerMillionUSD: 50.00,
+                isKnown: true
+            )
         }
 
         if normalized.contains("gpt-5-6-terra") || normalized.contains("gpt-56-terra") {
@@ -739,6 +776,19 @@ struct AzureTokenUsage: Equatable, Hashable, Codable {
         "\(inputTokens),\(cachedInputTokens),\(cacheCreationInputTokens),\(outputTokens),\(reasoningOutputTokens),\(totalTokens)"
     }
 
+    /// Replaces the output count, keeping `totalTokens` consistent. Used when a Claude Code
+    /// record only ever stored a `message_start` placeholder and the output had to be estimated.
+    func replacingOutputTokens(with newOutputTokens: Int) -> AzureTokenUsage {
+        AzureTokenUsage(
+            inputTokens: inputTokens,
+            cachedInputTokens: cachedInputTokens,
+            cacheCreationInputTokens: cacheCreationInputTokens,
+            outputTokens: newOutputTokens,
+            reasoningOutputTokens: reasoningOutputTokens,
+            totalTokens: inputTokens + newOutputTokens
+        )
+    }
+
     init(
         inputTokens: Int,
         cachedInputTokens: Int,
@@ -913,6 +963,11 @@ struct AzureUsageScanSummary: Equatable, Codable {
     var duplicateEventsSkipped = 0
     var startupReplayEventsSkipped = 0
     var malformedEventsSkipped = 0
+    /// Claude Code requests whose final `output_tokens` never reached disk (only a
+    /// `message_start` placeholder was recorded). Mostly subagent transcripts.
+    var incompleteOutputEvents = 0
+    /// Output tokens contributed by estimation rather than measurement, for those requests.
+    var estimatedOutputTokens = 0
     var earliestEvent: Date?
     var latestEvent: Date?
     var warnings: [String] = []
@@ -920,6 +975,27 @@ struct AzureUsageScanSummary: Equatable, Codable {
     var azureSessions: Int {
         get { providerSessions }
         set { providerSessions = newValue }
+    }
+
+    init() {}
+
+    /// Decoded field-by-field so that adding a counter never invalidates an existing cache file.
+    /// The synthesised decoder would throw on the first missing key and silently drop the whole
+    /// cached scan, forcing a full rescan for every provider.
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        filesScanned = try container.decodeIfPresent(Int.self, forKey: .filesScanned) ?? 0
+        sessionsScanned = try container.decodeIfPresent(Int.self, forKey: .sessionsScanned) ?? 0
+        providerSessions = try container.decodeIfPresent(Int.self, forKey: .providerSessions) ?? 0
+        eventsCounted = try container.decodeIfPresent(Int.self, forKey: .eventsCounted) ?? 0
+        duplicateEventsSkipped = try container.decodeIfPresent(Int.self, forKey: .duplicateEventsSkipped) ?? 0
+        startupReplayEventsSkipped = try container.decodeIfPresent(Int.self, forKey: .startupReplayEventsSkipped) ?? 0
+        malformedEventsSkipped = try container.decodeIfPresent(Int.self, forKey: .malformedEventsSkipped) ?? 0
+        incompleteOutputEvents = try container.decodeIfPresent(Int.self, forKey: .incompleteOutputEvents) ?? 0
+        estimatedOutputTokens = try container.decodeIfPresent(Int.self, forKey: .estimatedOutputTokens) ?? 0
+        earliestEvent = try container.decodeIfPresent(Date.self, forKey: .earliestEvent)
+        latestEvent = try container.decodeIfPresent(Date.self, forKey: .latestEvent)
+        warnings = try container.decodeIfPresent([String].self, forKey: .warnings) ?? []
     }
 }
 

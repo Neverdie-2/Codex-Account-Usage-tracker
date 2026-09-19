@@ -606,9 +606,18 @@ private struct AzureUsageSectionView: View {
 
     var body: some View {
         CodexLogUsageSectionView(
-            title: "Azure Usage",
+            title: "Codex Azure Usage",
             subtitle: "Local Codex JSONL token usage for Azure sessions",
             dashboard: viewModel.azureUsage,
+            historyRecords: viewModel.azureUsageHistoryRecords,
+            historyRecordsRevision: viewModel.azureUsageHistoryRevision,
+            historyStartDate: viewModel.azureUsageWindow.startDate(now: viewModel.displayNow, customStartDate: viewModel.azureCustomStartDate),
+            historyEndDate: viewModel.displayNow,
+            historyConfiguration: .azure,
+            historyIsCollapsed: viewModel.isSectionCollapsed(AccountTrackerViewModel.CollapsibleSection.azureUsageHistory),
+            onToggleHistoryCollapse: {
+                viewModel.toggleSectionCollapsed(AccountTrackerViewModel.CollapsibleSection.azureUsageHistory)
+            },
             isRefreshing: viewModel.isAzureRefreshing,
             lastScannedAt: viewModel.azureLastScannedAt,
             window: $viewModel.azureUsageWindow,
@@ -639,6 +648,15 @@ private struct OpenAIUsageSectionView: View {
             title: "OpenAI Codex Usage",
             subtitle: "Manual scan of local Codex JSONL token usage for OpenAI sessions",
             dashboard: viewModel.openAIUsage,
+            historyRecords: viewModel.openAIUsageHistoryRecords,
+            historyRecordsRevision: viewModel.openAIUsageHistoryRevision,
+            historyStartDate: viewModel.openAIUsageScanMode.startDate(now: viewModel.displayNow, customStartDate: viewModel.openAICustomStartDate),
+            historyEndDate: viewModel.displayNow,
+            historyConfiguration: .openAI,
+            historyIsCollapsed: viewModel.isSectionCollapsed(AccountTrackerViewModel.CollapsibleSection.openAIUsageHistory),
+            onToggleHistoryCollapse: {
+                viewModel.toggleSectionCollapsed(AccountTrackerViewModel.CollapsibleSection.openAIUsageHistory)
+            },
             isRefreshing: viewModel.isOpenAIRefreshing,
             lastScannedAt: viewModel.openAILastScannedAt,
             scanMode: $viewModel.openAIUsageScanMode,
@@ -668,6 +686,15 @@ private struct ClaudeCodeUsageSectionView: View {
             title: "Claude Code Usage",
             subtitle: "Manual scan of ~/.claude/projects transcripts (cache write tracked separately)",
             dashboard: viewModel.claudeCodeUsage,
+            historyRecords: viewModel.claudeCodeUsageHistoryRecords,
+            historyRecordsRevision: viewModel.claudeCodeUsageHistoryRevision,
+            historyStartDate: viewModel.claudeCodeUsageScanMode.startDate(now: viewModel.displayNow, customStartDate: viewModel.claudeCodeCustomStartDate),
+            historyEndDate: viewModel.displayNow,
+            historyConfiguration: .claudeCode,
+            historyIsCollapsed: viewModel.isSectionCollapsed(AccountTrackerViewModel.CollapsibleSection.claudeCodeUsageHistory),
+            onToggleHistoryCollapse: {
+                viewModel.toggleSectionCollapsed(AccountTrackerViewModel.CollapsibleSection.claudeCodeUsageHistory)
+            },
             isRefreshing: viewModel.isClaudeCodeRefreshing,
             lastScannedAt: viewModel.claudeCodeLastScannedAt,
             scanMode: $viewModel.claudeCodeUsageScanMode,
@@ -697,6 +724,15 @@ private struct LMStudioUsageSectionView: View {
             title: "LM Studio Usage",
             subtitle: "Local LM Studio model usage — chat app + opencode — free to run; savings vs each model's base Qwen API rate",
             dashboard: viewModel.lmStudioUsage,
+            historyRecords: viewModel.lmStudioUsageHistoryRecords,
+            historyRecordsRevision: viewModel.lmStudioUsageHistoryRevision,
+            historyStartDate: viewModel.lmStudioUsageScanMode.startDate(now: viewModel.displayNow, customStartDate: viewModel.lmStudioCustomStartDate),
+            historyEndDate: viewModel.displayNow,
+            historyConfiguration: .lmStudio,
+            historyIsCollapsed: viewModel.isSectionCollapsed(AccountTrackerViewModel.CollapsibleSection.lmStudioUsageHistory),
+            onToggleHistoryCollapse: {
+                viewModel.toggleSectionCollapsed(AccountTrackerViewModel.CollapsibleSection.lmStudioUsageHistory)
+            },
             isRefreshing: viewModel.isLMStudioRefreshing,
             lastScannedAt: viewModel.lmStudioLastScannedAt,
             scanMode: $viewModel.lmStudioUsageScanMode,
@@ -728,6 +764,15 @@ private struct ClaudeAzureUsageSectionView: View {
             title: "Claude Azure Usage",
             subtitle: "Per-account usage from the local LiteLLM gateway — best02 / ffola / zelen. Table request/token counts follow the window; the headline count is lifetime.",
             dashboard: viewModel.claudeAzureUsage,
+            historyRecords: viewModel.claudeAzureUsageHistoryRecords,
+            historyRecordsRevision: viewModel.claudeAzureUsageHistoryRevision,
+            historyStartDate: viewModel.claudeAzureUsageScanMode.startDate(now: viewModel.displayNow, customStartDate: viewModel.claudeAzureCustomStartDate),
+            historyEndDate: viewModel.displayNow,
+            historyConfiguration: .claudeAzure,
+            historyIsCollapsed: viewModel.isSectionCollapsed(AccountTrackerViewModel.CollapsibleSection.claudeAzureUsageHistory),
+            onToggleHistoryCollapse: {
+                viewModel.toggleSectionCollapsed(AccountTrackerViewModel.CollapsibleSection.claudeAzureUsageHistory)
+            },
             isRefreshing: viewModel.isClaudeAzureRefreshing,
             lastScannedAt: viewModel.claudeAzureLastScannedAt,
             scanMode: $viewModel.claudeAzureUsageScanMode,
@@ -751,6 +796,13 @@ private struct CodexLogUsageSectionView: View {
     let title: String
     let subtitle: String
     let dashboard: AzureUsageDashboard
+    let historyRecords: [AzureUsageRecord]
+    let historyRecordsRevision: Int
+    let historyStartDate: Date?
+    let historyEndDate: Date
+    let historyConfiguration: UsageHistoryPanelConfiguration
+    let historyIsCollapsed: Bool
+    let onToggleHistoryCollapse: () -> Void
     let isRefreshing: Bool
     let lastScannedAt: Date?
     var window: Binding<AzureUsageTimeWindow>?
@@ -770,6 +822,13 @@ private struct CodexLogUsageSectionView: View {
         title: String,
         subtitle: String,
         dashboard: AzureUsageDashboard,
+        historyRecords: [AzureUsageRecord],
+        historyRecordsRevision: Int,
+        historyStartDate: Date?,
+        historyEndDate: Date,
+        historyConfiguration: UsageHistoryPanelConfiguration,
+        historyIsCollapsed: Bool,
+        onToggleHistoryCollapse: @escaping () -> Void,
         isRefreshing: Bool,
         lastScannedAt: Date?,
         window: Binding<AzureUsageTimeWindow>,
@@ -787,6 +846,13 @@ private struct CodexLogUsageSectionView: View {
         self.title = title
         self.subtitle = subtitle
         self.dashboard = dashboard
+        self.historyRecords = historyRecords
+        self.historyRecordsRevision = historyRecordsRevision
+        self.historyStartDate = historyStartDate
+        self.historyEndDate = historyEndDate
+        self.historyConfiguration = historyConfiguration
+        self.historyIsCollapsed = historyIsCollapsed
+        self.onToggleHistoryCollapse = onToggleHistoryCollapse
         self.isRefreshing = isRefreshing
         self.lastScannedAt = lastScannedAt
         self.window = window
@@ -807,6 +873,13 @@ private struct CodexLogUsageSectionView: View {
         title: String,
         subtitle: String,
         dashboard: AzureUsageDashboard,
+        historyRecords: [AzureUsageRecord],
+        historyRecordsRevision: Int,
+        historyStartDate: Date?,
+        historyEndDate: Date,
+        historyConfiguration: UsageHistoryPanelConfiguration,
+        historyIsCollapsed: Bool,
+        onToggleHistoryCollapse: @escaping () -> Void,
         isRefreshing: Bool,
         lastScannedAt: Date?,
         scanMode: Binding<CodexUsageScanMode>,
@@ -824,6 +897,13 @@ private struct CodexLogUsageSectionView: View {
         self.title = title
         self.subtitle = subtitle
         self.dashboard = dashboard
+        self.historyRecords = historyRecords
+        self.historyRecordsRevision = historyRecordsRevision
+        self.historyStartDate = historyStartDate
+        self.historyEndDate = historyEndDate
+        self.historyConfiguration = historyConfiguration
+        self.historyIsCollapsed = historyIsCollapsed
+        self.onToggleHistoryCollapse = onToggleHistoryCollapse
         self.isRefreshing = isRefreshing
         self.lastScannedAt = lastScannedAt
         self.window = nil
@@ -919,6 +999,16 @@ private struct CodexLogUsageSectionView: View {
                     AzureUsageTotalPanel(title: "Total", value: dashboard.totals.totalTokens)
                     AzureUsageCostPanel(title: costLabel, value: dashboard.totals.estimatedCostUSD)
                 }
+
+                UsageHistoryChartView(
+                    records: historyRecords,
+                    recordsRevision: historyRecordsRevision,
+                    startDate: historyStartDate,
+                    endDate: historyEndDate,
+                    configuration: historyConfiguration,
+                    isCollapsed: historyIsCollapsed,
+                    onToggleCollapse: onToggleHistoryCollapse
+                )
 
                 HStack(alignment: .top, spacing: 12) {
                     AzureUsageTableView(
@@ -1557,6 +1647,7 @@ private struct AzureUsageScanStatsView: View {
     let sessionCounterLabel: String
 
     var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
         LazyVGrid(columns: [GridItem(.adaptive(minimum: 230), spacing: 18)], alignment: .leading, spacing: 10) {
             AzureUsageStat(label: "Earliest event", value: DateFormats.display(date: dashboard.summary.earliestEvent))
             AzureUsageStat(label: "Latest event", value: DateFormats.display(date: dashboard.summary.latestEvent))
@@ -1567,8 +1658,37 @@ private struct AzureUsageScanStatsView: View {
             AzureUsageStat(label: "Duplicates skipped", value: AzureUsageFormat.integer(dashboard.summary.duplicateEventsSkipped))
             AzureUsageStat(label: "Startup replay skipped", value: AzureUsageFormat.integer(dashboard.summary.startupReplayEventsSkipped))
             AzureUsageStat(label: "Malformed skipped", value: AzureUsageFormat.integer(dashboard.summary.malformedEventsSkipped))
+            if dashboard.summary.incompleteOutputEvents > 0 {
+                AzureUsageStat(
+                    label: "Output estimated",
+                    value: "\(AzureUsageFormat.integer(dashboard.summary.estimatedOutputTokens)) tokens · \(AzureUsageFormat.integer(dashboard.summary.incompleteOutputEvents)) requests"
+                )
+            }
             AzureUsageStat(label: "Last scanned", value: DateFormats.display(date: lastScannedAt))
         }
+
+        if dashboard.summary.incompleteOutputEvents > 0 {
+            Text(Self.incompleteOutputNote(summary: dashboard.summary))
+                .font(AzureUsageLowerFont.caption)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+                .padding(.top, 8)
+                .textSelection(.enabled)
+        }
+        }
+    }
+
+    /// Claude Code does not always write the final `output_tokens` for a response — mostly
+    /// subagent transcripts, where only the `message_start` placeholder is stored. Input and
+    /// cache counts stay exact; the output shortfall is estimated from response size, so the
+    /// panel says so rather than quietly reporting ~3 tokens for a full response.
+    private static func incompleteOutputNote(summary: AzureUsageScanSummary) -> String {
+        let requests = AzureUsageFormat.integer(summary.incompleteOutputEvents)
+        let tokens = AzureUsageFormat.integer(summary.estimatedOutputTokens)
+        var note = "Claude Code never wrote a final output-token count for \(requests) request(s) in this window "
+        note += "(mostly subagents). Input, cached and cache-write totals are exact; "
+        note += "~\(tokens) output tokens are estimated from response size, so Output, Total and Est. cost are approximate."
+        return note
     }
 }
 
