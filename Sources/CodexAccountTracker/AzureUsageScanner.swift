@@ -1,6 +1,15 @@
 import Foundation
 
 final class AzureUsageScanner {
+    /// OpenAI local Codex logs can be written by the desktop app, terminal TUI,
+    /// or the lower-level CLI entrypoint. Keep this allowlist exact: unknown or
+    /// missing originators must not be treated as OpenAI Codex usage.
+    static let supportedOpenAICodexOriginators: Set<String> = [
+        "Codex Desktop",
+        "codex-tui",
+        "codex_cli_rs"
+    ]
+
     private let fileManager: FileManager
     private let logRoots: [URL]
     private let metadataURLs: [URL]
@@ -205,6 +214,13 @@ final class AzureUsageScanner {
             }
             return lhs.projectPath.localizedCaseInsensitiveCompare(rhs.projectPath) == .orderedAscending
         }
+    }
+
+    /// The same project key used by the dashboard tables. Historical charts use
+    /// this helper so project totals remain aligned with the visible project table.
+    static func historyProjectLabel(for record: AzureUsageRecord) -> String {
+        let key = projectGroupingKey(for: record)
+        return key == AzureUsageRecord.chatProject ? "Chats" : record.projectName
     }
 
     private static func projectGroupingKey(for record: AzureUsageRecord) -> String {
@@ -470,7 +486,7 @@ final class AzureUsageScanner {
                 sessionProvider = Self.extractStringValue(named: "model_provider", from: line)
                 originator = Self.extractStringValue(named: "originator", from: line)
                 guard sessionProvider == CodexLogUsageProvider.openai.rawValue
-                    || sessionProvider == CodexLogUsageProvider.azure.rawValue
+                    || Self.isAzureCodexProvider(sessionProvider)
                     || sessionProvider == "azure_echo"
                 else { return false }
                 didReadSessionMeta = true
@@ -533,9 +549,22 @@ final class AzureUsageScanner {
         )
     }
 
+    /// Codex stamps each session with the config's `model_provider` id. Azure deployments are
+    /// wired as custom providers, so the id is whatever the config names it: the original
+    /// `azure`, or a per-deployment id such as `azure-astra`. All of them are Azure usage.
+    /// (`azure_echo` was a header-diagnostic proxy, never real Azure traffic — excluded.)
+    static func isAzureCodexProvider(_ providerID: String?) -> Bool {
+        guard let providerID else { return false }
+        return providerID == CodexLogUsageProvider.azure.rawValue || providerID.hasPrefix("azure-")
+    }
+
     private func isTargetCodexLocalSession(_ session: CodexLocalUsageIndexedSession) -> Bool {
-        session.provider == provider.rawValue
-            && (provider != .openai || session.originator == "Codex Desktop")
+        if provider == .azure {
+            return Self.isAzureCodexProvider(session.provider)
+        }
+        return session.provider == provider.rawValue
+            && (provider != .openai
+                || (session.originator.map(Self.supportedOpenAICodexOriginators.contains) ?? false))
     }
 
     private func seedCodexLocalReplayState(from session: CodexLocalUsageIndexedSession, state: inout AzureUsageScanState) {
@@ -733,6 +762,7 @@ final class AzureUsageScanner {
             }
             result.summary.malformedEventsSkipped += indexedFile.malformedEventsSkipped
             var fileKeyedRows: [String: AzureUsageParsedClaudeCodeEvent] = [:]
+            var fileContentCharacters: [String: Int] = [:]
             var fileUnkeyedRows: [AzureUsageParsedClaudeCodeEvent] = []
             var didCountProviderSession = false
 
@@ -749,24 +779,40 @@ final class AzureUsageScanner {
                 let row = parsedClaudeCodeEvent(from: indexedRow)
 
                 if let billingKey = row.billingKey {
-                    // Streaming chunks share the same provider message/request identity inside
-                    // a transcript. Later chunks carry cumulative usage, so the last row wins
-                    // before we compare duplicates copied into other transcript files.
-                    fileKeyedRows[billingKey] = row
+                    // One response is split across several transcript lines (one content block
+                    // each) that repeat the same request identity. Finalised lines repeat
+                    // identical usage, so we keep a single best line per request rather than
+                    // summing, and prefer a finalised line over a `message_start` placeholder
+                    // regardless of which came last. Content, unlike usage, really is split
+                    // across those lines, so it accumulates.
+                    fileContentCharacters[billingKey, default: 0] += row.contentCharacters
+                    if let existing = fileKeyedRows[billingKey] {
+                        if Self.claudeCodeRowWins(candidate: row, existing: existing) {
+                            fileKeyedRows[billingKey] = row
+                        }
+                    } else {
+                        fileKeyedRows[billingKey] = row
+                    }
                 } else {
                     fileUnkeyedRows.append(row)
                 }
             }
 
-            for row in fileKeyedRows.values {
+            for var row in fileKeyedRows.values {
                 guard let billingKey = row.billingKey else {
                     unkeyedRows.append(row)
                     continue
                 }
+                row.contentCharacters = fileContentCharacters[billingKey] ?? row.contentCharacters
                 if let existing = keyedRows[billingKey] {
                     result.summary.duplicateEventsSkipped += 1
+                    // Transcript copies of the same request can be truncated; keep the fullest
+                    // view of the response we have seen in any file.
+                    row.contentCharacters = max(row.contentCharacters, existing.contentCharacters)
                     if Self.claudeCodeRowWins(candidate: row, existing: existing) {
                         keyedRows[billingKey] = row
+                    } else {
+                        keyedRows[billingKey]?.contentCharacters = row.contentCharacters
                     }
                 } else {
                     keyedRows[billingKey] = row
@@ -784,7 +830,27 @@ final class AzureUsageScanner {
             return lhs.recordID.localizedCaseInsensitiveCompare(rhs.recordID) == .orderedAscending
         } + unkeyedRows
 
+        let estimation = ClaudeCodeOutputEstimator.estimate(
+            samples: rows.map { row in
+                ClaudeCodeOutputEstimator.Sample(
+                    id: row.recordID,
+                    sessionID: row.sessionID,
+                    model: row.model,
+                    contentCharacters: row.contentCharacters,
+                    measuredOutputTokens: row.hasFinalUsage ? row.usage.outputTokens : nil
+                    // A zero here is treated as incomplete by the estimator, which is what a
+                    // `stop_sequence` record reporting no output actually is.
+                )
+            }
+        )
+        result.summary.incompleteOutputEvents += estimation.incompleteEventCount
+        result.summary.estimatedOutputTokens += estimation.estimatedOutputTokens
+
         for row in rows {
+            var row = row
+            if let estimated = estimation.estimatedOutputTokensByID[row.recordID] {
+                row.usage = row.usage.replacingOutputTokens(with: estimated)
+            }
             appendRecord(
                 sessionID: row.sessionID,
                 recordID: row.recordID,
@@ -857,6 +923,12 @@ final class AzureUsageScanner {
                 ? anthropicDesktopMetadata
                 : defaultMetadata
 
+            // Claude Code appends a record when a response starts (`message_start`): input and
+            // cache counts are already final there, but `output_tokens` is a 1-5 token stub and
+            // `stop_reason` is absent. A finalised record normally follows, but for many subagent
+            // responses it never does, so the real output count reaches no file on disk.
+            let hasFinalUsage = (message["stop_reason"] as? String)?.isEmpty == false
+
             rows.append(ClaudeCodeUsageIndexedRow(
                 sessionID: logSessionID,
                 filePath: fileURL.path,
@@ -870,7 +942,9 @@ final class AzureUsageScanner {
                 messageID: messageID,
                 requestID: requestID,
                 isSidechain: Self.boolValue(object["isSidechain"]),
-                isSubagent: fileURL.path.contains("/subagents/")
+                isSubagent: fileURL.path.contains("/subagents/"),
+                hasFinalUsage: hasFinalUsage,
+                contentCharacters: Self.claudeCodeContentCharacters(from: message)
             ))
         }
 
@@ -899,7 +973,9 @@ final class AzureUsageScanner {
             messageID: row.messageID,
             requestID: row.requestID,
             isSidechain: row.isSidechain,
-            pathRole: row.isSubagent ? .subagent : .parent
+            pathRole: row.isSubagent ? .subagent : .parent,
+            hasFinalUsage: row.hasFinalUsage,
+            contentCharacters: row.contentCharacters
         )
     }
 
@@ -938,6 +1014,11 @@ final class AzureUsageScanner {
     }
 
     private static func claudeCodeRowWins(candidate: AzureUsageParsedClaudeCodeEvent, existing: AzureUsageParsedClaudeCodeEvent) -> Bool {
+        // A finalised record always beats a `message_start` placeholder: they describe the same
+        // request, but only the finalised one carries the real output count.
+        if candidate.hasFinalUsage != existing.hasFinalUsage {
+            return candidate.hasFinalUsage
+        }
         let candidateCost = AzureModelPricing.defaultPricing(for: candidate.model, provider: .claudeCode).estimatedCost(for: candidate.usage)
         let existingCost = AzureModelPricing.defaultPricing(for: existing.model, provider: .claudeCode).estimatedCost(for: existing.usage)
         if candidateCost != existingCost {
@@ -956,6 +1037,32 @@ final class AzureUsageScanner {
             return candidate.pathRole == .parent
         }
         return candidate.fileURL.path.localizedCaseInsensitiveCompare(existing.fileURL.path) == .orderedAscending
+    }
+
+    /// Size of the content the model actually produced, used to estimate output tokens when the
+    /// transcript only recorded a `message_start` placeholder.
+    private static func claudeCodeContentCharacters(from message: [String: Any]) -> Int {
+        guard let blocks = message["content"] as? [[String: Any]] else { return 0 }
+        var characters = 0
+        for block in blocks {
+            switch block["type"] as? String {
+            case "thinking":
+                characters += (block["thinking"] as? String)?.count ?? 0
+            case "redacted_thinking":
+                characters += (block["data"] as? String)?.count ?? 0
+            case "text":
+                characters += (block["text"] as? String)?.count ?? 0
+            case "tool_use":
+                characters += (block["name"] as? String)?.count ?? 0
+                if let input = block["input"],
+                   let data = try? JSONSerialization.data(withJSONObject: input, options: []) {
+                    characters += data.count
+                }
+            default:
+                continue
+            }
+        }
+        return characters
     }
 
     private static func claudeCodeTokenUsage(from usage: [String: Any]) -> AzureTokenUsage {
@@ -1392,6 +1499,8 @@ private struct AzureUsageParsedClaudeCodeEvent {
     var requestID: String?
     var isSidechain: Bool
     var pathRole: AzureUsageClaudeCodePathRole
+    var hasFinalUsage: Bool
+    var contentCharacters: Int
 
     var billingKey: String? {
         if let requestID, !requestID.isEmpty {

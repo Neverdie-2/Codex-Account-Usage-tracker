@@ -26,9 +26,9 @@ Each saved account card shows:
 
 `primary` quota is treated as the 5-hour window. `secondary` quota is treated as the weekly window. Remaining percent is calculated as `100 - usedPercent`.
 
-## Azure Usage Dashboard
+## Codex Azure Usage Dashboard
 
-The Azure Usage and OpenAI Codex Usage sections are separate from the ChatGPT/Codex account quota cards. They scan local Codex JSONL logs and recompute token usage without changing the saved account tracker data. Full results are cached locally after each refresh so the app can reopen with the last known dashboard immediately. Refreshes are incremental: after cached usage exists, the app scans only from the latest known token event through now, then merges new events into the cached result.
+The Codex Azure Usage and OpenAI Codex Usage sections are separate from the ChatGPT/Codex account quota cards. They scan local Codex JSONL logs and recompute token usage without changing the saved account tracker data. Full results are cached locally after each refresh so the app can reopen with the last known dashboard immediately. Refreshes are incremental: after cached usage exists, the app scans only from the latest known token event through now, then merges new events into the cached result.
 
 Log paths scanned:
 
@@ -39,8 +39,8 @@ Log paths scanned:
 
 Counting rules:
 
-- A session is included in Azure Usage only when a `session_meta` record has `payload.model_provider == "azure"`.
-- A session is included in OpenAI Codex Usage only when `session_meta.payload.model_provider == "openai"` and `session_meta.payload.originator == "Codex Desktop"`.
+- A session is included in Codex Azure Usage only when a `session_meta` record has `payload.model_provider == "azure"`.
+- A session is included in OpenAI Codex Usage only when `session_meta.payload.model_provider == "openai"` and `session_meta.payload.originator` is exactly one of `Codex Desktop`, `codex-tui`, or `codex_cli_rs` (the desktop app, terminal TUI, and CLI entrypoints). Missing or unknown originators are excluded.
 - The active model/deployment is read from preceding `turn_context` records with `payload.model`.
 - Project attribution is read from `session_meta.payload.cwd`; blank or missing values are grouped as `unknown project`.
 - Token usage is counted only from `event_msg` records where `payload.type == "token_count"`.
@@ -79,6 +79,35 @@ Counting rules:
 - Session attribution uses the transcript filename (the session UUID); subagent transcripts under `<session>/subagents/agent-*.jsonl` count as separate sessions.
 
 The Claude Code usage record carries four input token classes instead of three: uncached input (`input_tokens`), cache reads (`cache_read_input_tokens`), and cache writes (`cache_creation_input_tokens`), plus output tokens. A conditional **Cache write** tile is shown in the dashboard's totals row whenever cache_creation tokens are present.
+
+### Estimated output tokens
+
+Claude Code appends an assistant record when a response *starts*, carrying the `message_start`
+usage snapshot. Input, cache-read and cache-write counts are already final at that moment, but
+`output_tokens` is a 1-5 token placeholder and `message.stop_reason` is absent. A finalised record
+normally follows and wins de-duplication — but for a large share of **subagent** responses
+(`agent-*.jsonl`) it is never written, so the real output count reaches no file on disk and cannot
+be recovered by any later scan.
+
+Measured against Claude Code's own `/usage` panel for one session, the transcript held 98% of the
+cache-read, 91% of the cache-write, but only **20%** of the output tokens. Across all local
+transcripts the placeholder-only rate is 0.1% of main-session requests versus 13% of subagent
+requests, and it rises with how subagent-heavy the work is (48% on a workflow-heavy day).
+
+The scanner therefore detects records with no `stop_reason` and estimates their output from the
+size of the content the model produced, using a tokens-per-character ratio calibrated from the
+records in the same scan that *do* carry final usage (preferring session+model, then model, then
+global). On the session above this moves output accuracy from 20% to 85%, and estimated cost from
+76% to 92% of the truth. Validation against held-out complete records puts the aggregate within
+~7%, though a single request can be off by tens of percent.
+
+Estimated tokens are reported separately: the scan-stats grid shows an **Output estimated** entry
+and a note naming how many requests were affected, so the Output, Total and Est. cost figures are
+never presented as exact when they are not.
+
+Note that `~/.claude/stats-cache.json` (Claude Code's own `/stats` data) is **not** a valid
+cross-check: it sums every transcript line without de-duplication, so it double-counts input and
+cache tokens on responses split across multiple content blocks.
 
 Cost estimates use Anthropic's published 5-minute-TTL prompt-caching prices (per 1M tokens):
 

@@ -29,10 +29,20 @@ final class AccountTrackerViewModel: ObservableObject {
     @Published private(set) var lmStudioLastScannedAt: Date?
     @Published private(set) var claudeAzureLastScannedAt: Date?
     @Published private(set) var openAIAPIBillingLastScannedAt: Date?
+    @Published private(set) var azureUsageHistoryRecords: [AzureUsageRecord] = []
+    @Published private(set) var openAIUsageHistoryRecords: [AzureUsageRecord] = []
+    @Published private(set) var claudeCodeUsageHistoryRecords: [AzureUsageRecord] = []
+    @Published private(set) var claudeAzureUsageHistoryRecords: [AzureUsageRecord] = []
+    @Published private(set) var lmStudioUsageHistoryRecords: [AzureUsageRecord] = []
+    @Published private(set) var azureUsageHistoryRevision = 0
+    @Published private(set) var openAIUsageHistoryRevision = 0
+    @Published private(set) var claudeCodeUsageHistoryRevision = 0
+    @Published private(set) var claudeAzureUsageHistoryRevision = 0
+    @Published private(set) var lmStudioUsageHistoryRevision = 0
 
     /// Which collapsible UI sections are currently collapsed. Persisted to
     /// AppPreferences so the state survives relaunches.
-    @Published var collapsedSections: Set<String> = AppPreferences.collapsedSections {
+    @Published var collapsedSections: Set<String> {
         didSet { AppPreferences.collapsedSections = collapsedSections }
     }
 
@@ -44,6 +54,18 @@ final class AccountTrackerViewModel: ObservableObject {
         static let claudeCodeUsage = "claudeCodeUsage"
         static let claudeAzureUsage = "claudeAzureUsage"
         static let lmStudioUsage = "lmStudioUsage"
+        static let azureUsageHistory = "azureUsageHistory"
+        static let openAIUsageHistory = "openAIUsageHistory"
+        static let claudeCodeUsageHistory = "claudeCodeUsageHistory"
+        static let claudeAzureUsageHistory = "claudeAzureUsageHistory"
+        static let lmStudioUsageHistory = "lmStudioUsageHistory"
+        static let history: [String] = [
+            azureUsageHistory,
+            openAIUsageHistory,
+            claudeCodeUsageHistory,
+            claudeAzureUsageHistory,
+            lmStudioUsageHistory
+        ]
         static let all: [String] = [
             accounts, azureUsage, openAIUsage, claudeCodeUsage, claudeAzureUsage, lmStudioUsage,
         ]
@@ -60,16 +82,26 @@ final class AccountTrackerViewModel: ObservableObject {
     }
 
     var areAllSectionsCollapsed: Bool {
-        CollapsibleSection.all.allSatisfy { collapsedSections.contains($0) }
+        Self.areAllTopLevelSectionsCollapsed(collapsedSections)
     }
 
     /// Master toggle: collapse everything if anything is open, otherwise expand all.
     func toggleCollapseAllSections() {
-        if areAllSectionsCollapsed {
-            collapsedSections = []
+        collapsedSections = Self.toggledTopLevelCollapseAll(collapsedSections)
+    }
+
+    static func areAllTopLevelSectionsCollapsed(_ sections: Set<String>) -> Bool {
+        CollapsibleSection.all.allSatisfy { sections.contains($0) }
+    }
+
+    static func toggledTopLevelCollapseAll(_ sections: Set<String>) -> Set<String> {
+        var updated = sections
+        if areAllTopLevelSectionsCollapsed(sections) {
+            updated.subtract(CollapsibleSection.all)
         } else {
-            collapsedSections = Set(CollapsibleSection.all)
+            updated.formUnion(CollapsibleSection.all)
         }
+        return updated
     }
     @Published var openAIAdminKey: String {
         didSet {
@@ -202,6 +234,13 @@ final class AccountTrackerViewModel: ObservableObject {
     init() {
         endpointText = AppPreferences.endpoint
         openAIAdminKey = KeychainSecretStore.load(account: Self.openAIAdminKeyAccount)
+        var storedCollapsedSections = AppPreferences.collapsedSections
+        if !AppPreferences.usageHistoryCollapseDefaultsApplied {
+            storedCollapsedSections.formUnion(CollapsibleSection.history)
+            AppPreferences.collapsedSections = storedCollapsedSections
+            AppPreferences.usageHistoryCollapseDefaultsApplied = true
+        }
+        collapsedSections = storedCollapsedSections
     }
 
     var storagePath: String {
@@ -277,7 +316,7 @@ final class AccountTrackerViewModel: ObservableObject {
         lines.append("")
         appendUsageDashboard(
             azureUsage,
-            title: "Azure Usage",
+            title: "Codex Azure Usage",
             windowLabel: azureUsageWindow.label,
             lastScannedAt: azureLastScannedAt,
             sessionCounterLabel: CodexLogUsageProvider.azure.sessionCounterLabel,
@@ -596,8 +635,13 @@ final class AccountTrackerViewModel: ObservableObject {
         if let openAICache = usageCacheStore.load(provider: .openai) {
             openAIScanResult = openAICache.result
             openAILastScannedAt = openAICache.scannedAt
-            shouldRebuildOpenAIUsageCache = !AppPreferences.openAICodexForkReplayBackfillDone
-                && !openAICache.result.records.isEmpty
+            // The v6 migration expands OpenAI eligibility to terminal/TUI and
+            // CLI sessions. Rebuild even an empty cache: an empty snapshot can
+            // still have been produced before those sessions were eligible.
+            shouldRebuildOpenAIUsageCache = AppPreferences.shouldRebuildOpenAIUsageCache(
+                hasLoadedCache: true,
+                backfillDone: AppPreferences.openAICodexForkReplayBackfillDone
+            )
             rebuildOpenAIUsageDashboard()
         }
 
@@ -792,6 +836,8 @@ final class AccountTrackerViewModel: ObservableObject {
     }
 
     private func rebuildAzureUsageDashboard() {
+        azureUsageHistoryRecords = azureScanResult.records
+        azureUsageHistoryRevision += 1
         azureUsage = AzureUsageScanner.dashboard(
             from: azureScanResult,
             window: azureUsageWindow,
@@ -801,6 +847,8 @@ final class AccountTrackerViewModel: ObservableObject {
     }
 
     private func rebuildOpenAIUsageDashboard() {
+        openAIUsageHistoryRecords = openAIScanResult.records
+        openAIUsageHistoryRevision += 1
         openAIUsage = AzureUsageScanner.dashboard(
             from: openAIScanResult,
             window: openAIUsageScanMode.usageWindow,
@@ -837,6 +885,8 @@ final class AccountTrackerViewModel: ObservableObject {
             combined.records.append(contentsOf: desktopChatRecords)
         }
         combined.records.sort { $0.timestamp < $1.timestamp }
+        claudeCodeUsageHistoryRecords = combined.records
+        claudeCodeUsageHistoryRevision += 1
         claudeCodeUsage = AzureUsageScanner.dashboard(
             from: combined,
             window: claudeCodeUsageScanMode.usageWindow,
@@ -846,6 +896,8 @@ final class AccountTrackerViewModel: ObservableObject {
     }
 
     private func rebuildLMStudioUsageDashboard() {
+        lmStudioUsageHistoryRecords = lmStudioScanResult.records
+        lmStudioUsageHistoryRevision += 1
         lmStudioUsage = AzureUsageScanner.dashboard(
             from: lmStudioScanResult,
             window: lmStudioUsageScanMode.usageWindow,
@@ -874,6 +926,8 @@ final class AccountTrackerViewModel: ObservableObject {
             }
             return record
         }
+        claudeAzureUsageHistoryRecords = attributed.records
+        claudeAzureUsageHistoryRevision += 1
         claudeAzureUsage = AzureUsageScanner.dashboard(
             from: attributed,
             window: claudeAzureUsageScanMode.usageWindow,
