@@ -281,9 +281,13 @@ final class AzureUsageScanner {
 
     static func defaultLogRoots() -> [URL] {
         let home = FileManager.default.homeDirectoryForCurrentUser
+        // `~/.codex-azure` is the separate Codex home used by the Azure GPT-6 Astra copy of the
+        // app and by the `codex-azure` command, so the normal `~/.codex` can stay on OpenAI.
         return [
             home.appendingPathComponent(".codex/sessions", isDirectory: true),
-            home.appendingPathComponent(".codex/archived_sessions", isDirectory: true)
+            home.appendingPathComponent(".codex/archived_sessions", isDirectory: true),
+            home.appendingPathComponent(".codex-azure/sessions", isDirectory: true),
+            home.appendingPathComponent(".codex-azure/archived_sessions", isDirectory: true)
         ]
     }
 
