@@ -1,7 +1,9 @@
 import Foundation
 
 final class CodexLocalUsageIndexStore {
-    static let currentVersion = 2
+    // v3: sessions gained parentThreadID + tierChanges, events gained speed, and token usage
+    // now carries the cache-write count, so every file must be parsed once more.
+    static let currentVersion = 3
 
     private let directoryURL: URL
     private let fileManager: FileManager
@@ -113,6 +115,18 @@ struct CodexLocalUsageFileFingerprint: Codable, Equatable {
     }
 }
 
+/// One `thread_settings_applied` line: the speed setting that came into force at `timestamp`
+/// and stayed in force until the next change in the same file.
+struct CodexLocalUsageTierChange: Codable, Equatable {
+    var timestamp: Date
+    var speed: AzureUsageSpeed
+
+    private enum CodingKeys: String, CodingKey {
+        case timestamp = "t"
+        case speed = "s"
+    }
+}
+
 struct CodexLocalUsageIndexedSession: Codable, Equatable {
     var filePath: String
     var sessionID: String
@@ -120,7 +134,11 @@ struct CodexLocalUsageIndexedSession: Codable, Equatable {
     var originator: String?
     var metaTimestamp: Date?
     var forkedFromID: String?
+    /// Sub-agent sessions record the thread that spawned them; used to inherit the parent's
+    /// speed setting when the sub-agent's own file never recorded one.
+    var parentThreadID: String?
     var projectPath: String
+    var tierChanges: [CodexLocalUsageTierChange]?
     var events: [CodexLocalUsageIndexedEvent]
 
     private enum CodingKeys: String, CodingKey {
@@ -130,7 +148,9 @@ struct CodexLocalUsageIndexedSession: Codable, Equatable {
         case originator = "o"
         case metaTimestamp = "mt"
         case forkedFromID = "f"
+        case parentThreadID = "pt"
         case projectPath = "pp"
+        case tierChanges = "tc"
         case events = "e"
     }
 }
@@ -142,6 +162,9 @@ struct CodexLocalUsageIndexedEvent: Codable, Equatable {
     var lastUsage: AzureTokenUsage
     var replayKey: String?
     var sessionDedupeKey: String?
+    /// Speed setting in force in this file when the event was written. `nil` when the file
+    /// recorded no setting before this point; the scanner then inherits it from the parent.
+    var speed: AzureUsageSpeed?
 
     init(
         recordID: String,
@@ -149,7 +172,8 @@ struct CodexLocalUsageIndexedEvent: Codable, Equatable {
         model: String,
         lastUsage: AzureTokenUsage,
         replayKey: String?,
-        sessionDedupeKey: String?
+        sessionDedupeKey: String?,
+        speed: AzureUsageSpeed? = nil
     ) {
         self.recordID = recordID
         self.timestamp = timestamp
@@ -157,6 +181,7 @@ struct CodexLocalUsageIndexedEvent: Codable, Equatable {
         self.lastUsage = lastUsage
         self.replayKey = replayKey
         self.sessionDedupeKey = sessionDedupeKey
+        self.speed = speed
     }
 
     private enum CodingKeys: String, CodingKey {
@@ -166,6 +191,7 @@ struct CodexLocalUsageIndexedEvent: Codable, Equatable {
         case lastUsage = "u"
         case replayKey = "r"
         case sessionDedupeKey = "d"
+        case speed = "st"
     }
 
     init(from decoder: Decoder) throws {
@@ -184,6 +210,7 @@ struct CodexLocalUsageIndexedEvent: Codable, Equatable {
         )
         replayKey = try container.decodeIfPresent(String.self, forKey: .replayKey)
         sessionDedupeKey = try container.decodeIfPresent(String.self, forKey: .sessionDedupeKey)
+        speed = try container.decodeIfPresent(AzureUsageSpeed.self, forKey: .speed)
     }
 
     func encode(to encoder: Encoder) throws {
@@ -201,6 +228,7 @@ struct CodexLocalUsageIndexedEvent: Codable, Equatable {
         ], forKey: .lastUsage)
         try container.encodeIfPresent(replayKey, forKey: .replayKey)
         try container.encodeIfPresent(sessionDedupeKey, forKey: .sessionDedupeKey)
+        try container.encodeIfPresent(speed, forKey: .speed)
     }
 }
 

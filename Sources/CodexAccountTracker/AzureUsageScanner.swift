@@ -106,9 +106,19 @@ final class AzureUsageScanner {
 
         var endpointGroups: [String: AzureUsageGroup] = [:]
         var modelGroups: [String: AzureUsageGroup] = [:]
+        var unknownSpeedRecordCount = 0
+        var unknownSpeedExtraCostUSD = 0.0
+        var hasSolRecordAfterPromotionalPeriod = false
 
         for record in records {
             let pricing = AzureModelPricing.defaultPricing(for: record.model, provider: result.provider)
+            if record.usage.speed == .unknown, pricing.fastModeMultiplier != nil {
+                unknownSpeedRecordCount += 1
+                unknownSpeedExtraCostUSD += pricing.estimatedCostIfFast(for: record.usage) - pricing.estimatedCost(for: record.usage)
+            }
+            if pricing.modelPattern == solModelPattern, record.timestamp > solPromotionalPricingEnd {
+                hasSolRecordAfterPromotionalPeriod = true
+            }
             dashboard.totals.add(record.usage, pricing: pricing)
             dashboard.summary.eventsCounted += 1
             dashboard.summary.earliestEvent = minDate(dashboard.summary.earliestEvent, record.timestamp)
@@ -143,6 +153,19 @@ final class AzureUsageScanner {
 
         if records.contains(where: { !AzureModelPricing.defaultPricing(for: $0.model, provider: result.provider).isKnown }) {
             dashboard.summary.warnings.append("\(result.provider.displayName) cost is estimated only for recognized pricing presets; unknown models show $0 estimated cost until rates are configured.")
+        }
+
+        if unknownSpeedRecordCount > 0 {
+            dashboard.summary.warnings.append(
+                "\(unknownSpeedRecordCount) requests have no recorded speed setting and are priced at Standard; "
+                + "if all of them ran in Fast mode the estimate would be $\(String(format: "%.2f", unknownSpeedExtraCostUSD)) higher."
+            )
+        }
+
+        if hasSolRecordAfterPromotionalPeriod {
+            dashboard.summary.warnings.append(
+                "GPT-5.6 Sol is priced at its promotional rate, which OpenAI guaranteed only through November 21, 2026 — check the current price."
+            )
         }
 
         dashboard.byEndpointDeployment = endpointGroups.values.sorted { lhs, rhs in
@@ -449,12 +472,28 @@ final class AzureUsageScanner {
 
         result.summary.sessionsScanned = sessions.count
         result.summary.providerSessions = sessions.filter(isTargetCodexLocalSession).count
+
+        // A sub-agent inherits its parent's speed setting, and the parent is often a session
+        // this dashboard does not show (a different provider), so the lookup spans every
+        // session that was parsed, not just the target ones.
+        var sessionsByID: [String: CodexLocalUsageIndexedSession] = [:]
+        for session in sessions {
+            sessionsByID[session.sessionID] = session
+        }
+
         for session in sessions {
             guard isTargetCodexLocalSession(session) else {
                 seedCodexLocalReplayState(from: session, state: &state)
                 continue
             }
-            processCodexLocalSession(session, metadata: metadata, eventCutoff: eventCutoff, result: &result, state: &state)
+            processCodexLocalSession(
+                session,
+                metadata: metadata,
+                eventCutoff: eventCutoff,
+                sessionsByID: sessionsByID,
+                result: &result,
+                state: &state
+            )
         }
 
         if didChangeIndex {
@@ -473,6 +512,9 @@ final class AzureUsageScanner {
         var didReadCodexSessionMeta = false
         var didReadSessionMeta = false
         var currentModel: String?
+        var parentThreadID: String?
+        var currentSpeed: AzureUsageSpeed?
+        var tierChanges: [CodexLocalUsageTierChange] = []
         var parsedEvents: [CodexLocalUsageIndexedEvent] = []
         var eventIndex = 0
 
@@ -495,11 +537,32 @@ final class AzureUsageScanner {
                 }
                 metaTimestamp = Self.date(from: Self.extractStringValue(named: "timestamp", from: line))
                 forkedFromID = Self.extractStringValue(named: "forked_from_id", from: line)
+                parentThreadID = Self.extractStringValue(named: "parent_thread_id", from: line)
                 projectPath = Self.extractProjectPath(from: line)
                 return true
             }
 
             guard didReadSessionMeta else { return true }
+
+            // Tested before turn_context: a thread_settings_applied line embeds the session's
+            // instruction text, which can contain other keywords we match on.
+            if lineData.containsASCII(Self.threadSettingsAppliedBytes) {
+                guard let line = String(data: lineData, encoding: .utf8) else { return true }
+                switch Self.extractStringValue(named: "service_tier", from: line) {
+                case "priority":
+                    currentSpeed = .fast
+                case "default":
+                    currentSpeed = .standard
+                default:
+                    // An unrecognised or missing tier leaves the setting in force unchanged.
+                    return true
+                }
+                if let speed = currentSpeed,
+                   let timestamp = Self.date(from: Self.extractStringValue(named: "timestamp", from: line)) {
+                    tierChanges.append(CodexLocalUsageTierChange(timestamp: timestamp, speed: speed))
+                }
+                return true
+            }
 
             if lineData.containsASCII(Self.turnContextBytes) {
                 guard let line = String(data: lineData, encoding: .utf8) else { return true }
@@ -524,7 +587,8 @@ final class AzureUsageScanner {
                 model: currentModel ?? Self.unknownModel,
                 lastUsage: lastUsage,
                 replayKey: replayKey,
-                sessionDedupeKey: totalUsage.map { "\(sessionID)|\($0.signature)" }
+                sessionDedupeKey: totalUsage.map { "\(sessionID)|\($0.signature)" },
+                speed: currentSpeed
             ))
             return true
         }
@@ -544,7 +608,9 @@ final class AzureUsageScanner {
             originator: originator,
             metaTimestamp: metaTimestamp,
             forkedFromID: forkedFromID,
+            parentThreadID: parentThreadID,
             projectPath: projectPath,
+            tierChanges: tierChanges.isEmpty ? nil : tierChanges,
             events: parsedEvents
         )
     }
@@ -574,10 +640,48 @@ final class AzureUsageScanner {
         }
     }
 
+    /// Speed setting in force in `session` at `date`, or `nil` when the file recorded no
+    /// setting at or before that moment.
+    private static func codexLocalTierInForce(in session: CodexLocalUsageIndexedSession, at date: Date) -> AzureUsageSpeed? {
+        guard let changes = session.tierChanges else { return nil }
+        var result: AzureUsageSpeed?
+        for change in changes.sorted(by: { $0.timestamp < $1.timestamp }) where change.timestamp <= date {
+            result = change.speed
+        }
+        return result
+    }
+
+    /// The speed an event actually ran at. The event's own file wins; otherwise the setting is
+    /// inherited from the spawning thread, which may itself have inherited it. Bounded to five
+    /// levels so a malformed parent chain cannot loop.
+    private static func codexLocalResolvedSpeed(
+        for event: CodexLocalUsageIndexedEvent,
+        session: CodexLocalUsageIndexedSession,
+        sessionsByID: [String: CodexLocalUsageIndexedSession]
+    ) -> AzureUsageSpeed {
+        if let speed = event.speed { return speed }
+
+        var child = session
+        for _ in 0..<5 {
+            guard let parentID = child.parentThreadID,
+                  let parent = sessionsByID[parentID],
+                  parent.sessionID != child.sessionID
+            else { return .unknown }
+
+            if let spawnedAt = child.metaTimestamp,
+               let inherited = codexLocalTierInForce(in: parent, at: spawnedAt) {
+                return inherited
+            }
+            child = parent
+        }
+        return .unknown
+    }
+
     private func processCodexLocalSession(
         _ session: CodexLocalUsageIndexedSession,
         metadata: AzureUsageDetectedMetadata,
         eventCutoff: Date?,
+        sessionsByID: [String: CodexLocalUsageIndexedSession],
         result: inout AzureUsageScanResult,
         state: inout AzureUsageScanState
     ) {
@@ -629,6 +733,9 @@ final class AzureUsageScanner {
                 continue
             }
 
+            var usage = event.lastUsage
+            usage.speed = Self.codexLocalResolvedSpeed(for: event, session: session, sessionsByID: sessionsByID)
+
             appendRecord(
                 sessionID: session.sessionID,
                 recordID: event.recordID,
@@ -636,7 +743,7 @@ final class AzureUsageScanner {
                 timestamp: event.timestamp,
                 metadata: metadata,
                 model: event.model,
-                usage: event.lastUsage,
+                usage: usage,
                 projectPath: session.projectPath,
                 result: &result
             )
@@ -1070,14 +1177,24 @@ final class AzureUsageScanner {
         let cacheCreation = intValue(usage["cache_creation_input_tokens"]) ?? 0
         let cacheRead = intValue(usage["cache_read_input_tokens"]) ?? 0
         let output = intValue(usage["output_tokens"]) ?? 0
+        // Anthropic bills a 1-hour cache write at twice the base input price and a 5-minute
+        // one at 1.25x, so the two halves of the write are kept apart. Transcripts written
+        // before the split existed report no `cache_creation` object, leaving it at 0.
+        let cacheCreationDetail = usage["cache_creation"] as? [String: Any]
+        let oneHourCacheCreation = min(
+            max(intValue(cacheCreationDetail?["ephemeral_1h_input_tokens"]) ?? 0, 0),
+            cacheCreation
+        )
         let totalInput = input + cacheCreation + cacheRead
         return AzureTokenUsage(
             inputTokens: totalInput,
             cachedInputTokens: cacheRead,
             cacheCreationInputTokens: cacheCreation,
+            cacheCreation1hInputTokens: oneHourCacheCreation,
             outputTokens: output,
             reasoningOutputTokens: 0,
-            totalTokens: totalInput + output
+            totalTokens: totalInput + output,
+            speed: .standard
         )
     }
 
@@ -1287,6 +1404,10 @@ final class AzureUsageScanner {
         let inputTokens = extractIntValue(named: "input_tokens", from: objectBody)
         let cachedInputTokens = extractIntValue(named: "cached_input_tokens", from: objectBody)
             ?? extractIntValue(named: "cache_read_input_tokens", from: objectBody)
+        // Codex reports the cache write as a subset of input_tokens, so it is carved out of
+        // the uncached part rather than added on top. Priced at the cache-write rate.
+        let cacheWriteInputTokens = extractIntValue(named: "cache_write_input_tokens", from: objectBody)
+            ?? extractIntValue(named: "cache_creation_input_tokens", from: objectBody)
         let outputTokens = extractIntValue(named: "output_tokens", from: objectBody)
         let reasoningOutputTokens = extractIntValue(named: "reasoning_output_tokens", from: objectBody)
         let totalTokens = extractIntValue(named: "total_tokens", from: objectBody)
@@ -1304,6 +1425,7 @@ final class AzureUsageScanner {
 
         let input = inputTokens ?? 0
         let cached = min(cachedInputTokens ?? 0, input)
+        let cacheWrite = min(max(cacheWriteInputTokens ?? 0, 0), max(input - cached, 0))
         let output = outputTokens ?? 0
         let reasoning = reasoningOutputTokens ?? 0
         let total = max(totalTokens ?? 0, input + output)
@@ -1315,6 +1437,7 @@ final class AzureUsageScanner {
         return AzureTokenUsage(
             inputTokens: input,
             cachedInputTokens: cached,
+            cacheCreationInputTokens: cacheWrite,
             outputTokens: output,
             reasoningOutputTokens: reasoning,
             totalTokens: total
@@ -1438,14 +1561,35 @@ final class AzureUsageScanner {
     static let unknownResource = "unknown resource"
     static let unknownDeployment = "unknown deployment"
     static let unknownModel = "unknown"
+
+    /// Pricing preset whose rates are promotional, quoted from
+    /// https://developers.openai.com/api/docs/pricing (read 2026-09-21):
+    /// "GPT-5.6 Sol's promotional pricing is available at least through November 21, 2026."
+    /// The page lists no regular price, so requests dated after that day get a warning
+    /// instead of an invented rate.
+    static let solModelPattern = "gpt-5.6-sol"
+    static let solPromotionalPricingEnd: Date = {
+        var components = DateComponents()
+        components.year = 2026
+        components.month = 11
+        components.day = 21
+        components.hour = 23
+        components.minute = 59
+        components.second = 59
+        components.timeZone = TimeZone(identifier: "UTC")
+        return Calendar(identifier: .gregorian).date(from: components) ?? .distantFuture
+    }()
+
     private static let sessionMetaBytes = Array("\"session_meta\"".utf8)
     private static let turnContextBytes = Array("\"turn_context\"".utf8)
     private static let tokenCountBytes = Array("\"token_count\"".utf8)
+    private static let threadSettingsAppliedBytes = Array("\"thread_settings_applied\"".utf8)
     private static let assistantTypeBytes = Array("\"type\":\"assistant\"".utf8)
     private static let codexLocalRelevantLinePatterns = [
         Data(sessionMetaBytes),
         Data(turnContextBytes),
-        Data(tokenCountBytes)
+        Data(tokenCountBytes),
+        Data(threadSettingsAppliedBytes)
     ]
 }
 

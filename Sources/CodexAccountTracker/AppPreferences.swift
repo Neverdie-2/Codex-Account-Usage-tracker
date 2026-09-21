@@ -5,9 +5,12 @@ struct AppPreferences {
         static let endpoint = "codexAccountTracker.endpoint"
         static let openAIAPIUsageWindow = "codexAccountTracker.openAIAPIUsageWindow"
         static let claudeCodeFoundryBackfillDone = "codexAccountTracker.claudeCodeFoundryBackfillDone"
-        static let claudeCodeProjectRootBackfillDone = "codexAccountTracker.claudeCodeProjectRootBackfillDone.v1"
-        static let openAICodexForkReplayBackfillDone = "codexAccountTracker.openAICodexForkReplayBackfillDone.v6"
-        static let azureCodexForkReplayBackfillDone = "codexAccountTracker.azureCodexForkReplayBackfillDone.v5"
+        // Each of these three was bumped one version for the per-request pricing upgrade
+        // (cache writes, 1-hour cache split, speed setting): every provider re-reads its logs
+        // once so existing records gain the new per-request facts.
+        static let claudeCodeProjectRootBackfillDone = "codexAccountTracker.claudeCodeProjectRootBackfillDone.v2"
+        static let openAICodexForkReplayBackfillDone = "codexAccountTracker.openAICodexForkReplayBackfillDone.v7"
+        static let azureCodexForkReplayBackfillDone = "codexAccountTracker.azureCodexForkReplayBackfillDone.v6"
         static let collapsedSections = "codexAccountTracker.collapsedSections"
         static let usageHistoryCollapseDefaultsApplied = "codexAccountTracker.usageHistoryCollapseDefaultsApplied.v1"
     }

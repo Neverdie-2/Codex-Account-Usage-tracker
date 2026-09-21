@@ -2,7 +2,8 @@ import Foundation
 
 final class ClaudeCodeUsageIndexStore {
     // v3: rows gained hasFinalUsage / contentCharacters for output-token estimation.
-    static let currentVersion = 3
+    // v4: usage gained the 1-hour / 5-minute cache-write split, which is priced differently.
+    static let currentVersion = 4
 
     private let directoryURL: URL
     private let fileManager: FileManager
