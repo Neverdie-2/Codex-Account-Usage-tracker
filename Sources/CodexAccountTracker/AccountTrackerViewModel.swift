@@ -389,22 +389,20 @@ final class AccountTrackerViewModel: ObservableObject {
         guard !isAzureRefreshing else { return }
         isAzureRefreshing = true
         let previousResult = azureScanResult
-        let needsFullRebuild = shouldRebuildAzureUsageCache
-        let startDate = needsFullRebuild
-            ? nil
-            : Self.incrementalUsageRefreshStartDate(from: previousResult)
 
         Task { [weak self, azureScanner, usageCacheStore] in
+            // Always scan with no cutoff. A timestamp cutoff skips any event written late but
+            // stamped earlier than another agent's newest event, and it can never be recovered.
+            // Scanning everything is cheap: the scanner keeps a per-file index keyed by
+            // size+mtime, so unchanged files are not re-parsed.
             let result = await Task.detached(priority: .utility) {
-                azureScanner.scan(since: startDate)
+                azureScanner.scan(since: nil)
             }.value
 
             guard let self else { return }
             defer { isAzureRefreshing = false }
             let scannedAt = Date()
-            azureScanResult = needsFullRebuild
-                ? result
-                : Self.mergedUsageResult(previousResult, with: result)
+            azureScanResult = Self.mergedPreservingVanishedFiles(previous: previousResult, fresh: result)
             azureLastScannedAt = scannedAt
             usageCacheStore.save(azureScanResult, scannedAt: scannedAt)
             shouldRebuildAzureUsageCache = false
@@ -421,27 +419,17 @@ final class AccountTrackerViewModel: ObservableObject {
         guard !isOpenAIRefreshing else { return }
         isOpenAIRefreshing = true
         let previousResult = openAIScanResult
-        let needsFullRebuild = shouldRebuildOpenAIUsageCache
-        let startDate = needsFullRebuild
-            ? nil
-            : Self.openAIUsageRefreshStartDate(
-                previousResult: previousResult,
-                scanMode: openAIUsageScanMode,
-                now: displayNow,
-                customStartDate: openAICustomStartDate
-            )
 
         Task { [weak self, openAIUsageScanner, usageCacheStore] in
+            // No cutoff — see refreshAzureUsage for why.
             let result = await Task.detached(priority: .utility) {
-                openAIUsageScanner.scan(since: startDate)
+                openAIUsageScanner.scan(since: nil)
             }.value
 
             guard let self else { return }
             defer { isOpenAIRefreshing = false }
             let scannedAt = Date()
-            openAIScanResult = needsFullRebuild
-                ? result
-                : Self.mergedUsageResult(previousResult, with: result)
+            openAIScanResult = Self.mergedPreservingVanishedFiles(previous: previousResult, fresh: result)
             openAILastScannedAt = scannedAt
             usageCacheStore.save(openAIScanResult, scannedAt: scannedAt)
             shouldRebuildOpenAIUsageCache = false
@@ -462,27 +450,17 @@ final class AccountTrackerViewModel: ObservableObject {
         // preference is ever cleared.
         let needsFoundryBackfill = !AppPreferences.claudeCodeFoundryBackfillDone
             && !Self.scanResultIncludesFoundry(previousResult)
-        let needsFullRebuild = shouldRebuildClaudeCodeUsageCache || needsFoundryBackfill
-        let startDate: Date? = needsFullRebuild
-            ? nil
-            : Self.openAIUsageRefreshStartDate(
-                previousResult: previousResult,
-                scanMode: claudeCodeUsageScanMode,
-                now: displayNow,
-                customStartDate: claudeCodeCustomStartDate
-            )
 
         Task { [weak self, claudeCodeUsageScanner, usageCacheStore] in
+            // No cutoff — see refreshAzureUsage for why.
             let result = await Task.detached(priority: .utility) {
-                claudeCodeUsageScanner.scan(since: startDate)
+                claudeCodeUsageScanner.scan(since: nil)
             }.value
 
             guard let self else { return }
             defer { isClaudeCodeRefreshing = false }
             let scannedAt = Date()
-            claudeCodeScanResult = needsFullRebuild
-                ? result
-                : Self.mergedUsageResult(previousResult, with: result)
+            claudeCodeScanResult = Self.mergedPreservingVanishedFiles(previous: previousResult, fresh: result)
             claudeCodeLastScannedAt = scannedAt
             usageCacheStore.save(claudeCodeScanResult, scannedAt: scannedAt)
             shouldRebuildClaudeCodeUsageCache = false
@@ -998,47 +976,66 @@ final class AccountTrackerViewModel: ObservableObject {
         return result
     }
 
-    private static func incrementalUsageRefreshStartDate(from result: AzureUsageScanResult) -> Date? {
-        guard let latestKnownEvent = result.summary.latestEvent ?? result.records.map(\.timestamp).max() else {
-            return nil
+    /// The single merge rule used by every usage refresh: whatever is still on disk is
+    /// re-derived from scratch, whatever has vanished from disk is kept as it was cached.
+    ///
+    /// Claude Code deletes old transcripts, so most of the cached Claude history has no file
+    /// behind it any more. Replacing the cached result with a fresh scan — which is what the
+    /// old "full rebuild" path did — would erase all of it.
+    static func mergedPreservingVanishedFiles(
+        previous: AzureUsageScanResult,
+        fresh: AzureUsageScanResult,
+        fileExists: (String) -> Bool = { FileManager.default.fileExists(atPath: $0) }
+    ) -> AzureUsageScanResult {
+        guard !previous.records.isEmpty else { return fresh }
+        // An empty scan next to a non-empty cache is far more likely to be a failed or blocked
+        // read than a genuinely empty history, so it must never wipe what we already have.
+        guard !fresh.records.isEmpty else { return previous }
+
+        let previousByID = Dictionary(previous.records.map { ($0.id, $0) }, uniquingKeysWith: { _, latest in latest })
+
+        var recordsByID: [String: AzureUsageRecord] = [:]
+        recordsByID.reserveCapacity(previous.records.count + fresh.records.count)
+        for record in fresh.records {
+            if previous.provider == .azure, let priorRecord = previousByID[record.id] {
+                // Azure endpoint/resource are inferred from current local config and can drift
+                // when the user changes their codex-azure wrapper or config.toml. Once an Azure
+                // record's labels are captured, keep them sticky so historical sessions don't
+                // get relabeled to whatever endpoint is currently configured.
+                var preserved = record
+                preserved.endpoint = priorRecord.endpoint
+                preserved.resource = priorRecord.resource
+                preserved.deployment = priorRecord.deployment
+                recordsByID[record.id] = preserved
+            } else {
+                recordsByID[record.id] = record
+            }
         }
 
-        return latestKnownEvent
-    }
-
-    private static func openAIUsageRefreshStartDate(
-        previousResult: AzureUsageScanResult,
-        scanMode: CodexUsageScanMode,
-        now: Date,
-        customStartDate: Date
-    ) -> Date? {
-        windowAwareRefreshStartDate(
-            previousResult: previousResult,
-            windowStartDate: scanMode.startDate(now: now, customStartDate: customStartDate)
-        )
-    }
-
-    private static func windowAwareRefreshStartDate(
-        previousResult: AzureUsageScanResult,
-        windowStartDate: Date?
-    ) -> Date? {
-        guard let incrementalStartDate = incrementalUsageRefreshStartDate(from: previousResult) else {
-            return windowStartDate
+        // Thousands of records share a few hundred paths, so the existence check is cached.
+        var existsByPath: [String: Bool] = [:]
+        for record in previous.records where recordsByID[record.id] == nil {
+            let exists: Bool
+            if let cached = existsByPath[record.filePath] {
+                exists = cached
+            } else {
+                exists = fileExists(record.filePath)
+                existsByPath[record.filePath] = exists
+            }
+            // The file is still there and the fresh scan did not produce this record, so the
+            // record is genuinely gone (re-derived away); only vanished files are preserved.
+            if !exists {
+                recordsByID[record.id] = record
+            }
         }
 
-        guard let windowStartDate else {
-            return incrementalStartDate
+        var result = AzureUsageScanResult(provider: previous.provider)
+        result.records = recordsByID.values.sorted { lhs, rhs in
+            if lhs.timestamp != rhs.timestamp { return lhs.timestamp < rhs.timestamp }
+            return lhs.id.localizedCaseInsensitiveCompare(rhs.id) == .orderedAscending
         }
-
-        guard let earliestKnownEvent = previousResult.summary.earliestEvent ?? previousResult.records.map(\.timestamp).min() else {
-            return windowStartDate
-        }
-
-        if windowStartDate < earliestKnownEvent {
-            return windowStartDate
-        }
-
-        return incrementalStartDate
+        result.summary = mergedUsageSummary(previous.summary, fresh.summary, records: result.records)
+        return result
     }
 
     private static func mergedUsageSummary(

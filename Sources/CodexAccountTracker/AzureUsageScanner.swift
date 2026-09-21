@@ -296,7 +296,7 @@ final class AzureUsageScanner {
         // currently-configured Azure base_url, which is the only available endpoint
         // signal — session_meta payloads don't record base_url. The "label drift" risk
         // when the wrapper changes is mitigated by the sticky-merge logic in
-        // AccountTrackerViewModel.mergedUsageResult: existing Azure records keep their
+        // AccountTrackerViewModel.mergedPreservingVanishedFiles: existing Azure records keep their
         // endpoint/resource/deployment across scans, so historical labels never get
         // retroactively rewritten by a newer wrapper.
         let home = FileManager.default.homeDirectoryForCurrentUser
