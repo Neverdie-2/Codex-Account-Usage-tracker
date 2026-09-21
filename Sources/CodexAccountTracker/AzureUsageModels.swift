@@ -610,10 +610,7 @@ struct AzureModelPricing: Equatable, Codable {
                         cachedInputPerMillionUSD: 0.03,
                         cacheWritePerMillionUSD: 0.30,
                         outputPerMillionUSD: 1.25,
-                        // The plan's table lists 0.60 here. Note it is the only preset where that
-                        // figure is not 2x this entry's base input ($0.25 -> $0.50); flagged for
-                        // the operator rather than silently changed.
-                        cacheWrite1hPerMillionUSD: 0.60,
+                        cacheWrite1hPerMillionUSD: 0.50,
                         isKnown: true
                     )
                 }

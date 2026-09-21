@@ -976,28 +976,25 @@ final class AccountTrackerViewModel: ObservableObject {
         return result
     }
 
-    /// The single merge rule used by every usage refresh: whatever is still on disk is
-    /// re-derived from scratch, whatever has vanished from disk is kept as it was cached.
+    /// The single merge rule used by every usage refresh: a refresh may add records and update
+    /// records it re-derives, but it never drops a record that was already cached.
     ///
-    /// Claude Code deletes old transcripts, so most of the cached Claude history has no file
-    /// behind it any more. Replacing the cached result with a fresh scan — which is what the
-    /// old "full rebuild" path did — would erase all of it.
+    /// Log files are not a stable source. Claude Code deletes old transcripts, and Codex rewrites
+    /// its own rollout files (a sub-agent file that once held ~1,000 token events was later found
+    /// holding 87), so neither "the file is gone" nor "the file is still there" says whether a
+    /// cached record can be re-derived. Dropping whatever a fresh scan fails to reproduce erased
+    /// 20,456 real Codex records in a dry run on live data (2026-09-21).
     static func mergedPreservingVanishedFiles(
         previous: AzureUsageScanResult,
-        fresh: AzureUsageScanResult,
-        fileExists: (String) -> Bool = { FileManager.default.fileExists(atPath: $0) }
+        fresh: AzureUsageScanResult
     ) -> AzureUsageScanResult {
         guard !previous.records.isEmpty else { return fresh }
-        // An empty scan next to a non-empty cache is far more likely to be a failed or blocked
-        // read than a genuinely empty history, so it must never wipe what we already have.
         guard !fresh.records.isEmpty else { return previous }
 
-        let previousByID = Dictionary(previous.records.map { ($0.id, $0) }, uniquingKeysWith: { _, latest in latest })
-
-        var recordsByID: [String: AzureUsageRecord] = [:]
+        var recordsByID = Dictionary(previous.records.map { ($0.id, $0) }, uniquingKeysWith: { _, latest in latest })
         recordsByID.reserveCapacity(previous.records.count + fresh.records.count)
         for record in fresh.records {
-            if previous.provider == .azure, let priorRecord = previousByID[record.id] {
+            if previous.provider == .azure, let priorRecord = recordsByID[record.id] {
                 // Azure endpoint/resource are inferred from current local config and can drift
                 // when the user changes their codex-azure wrapper or config.toml. Once an Azure
                 // record's labels are captured, keep them sticky so historical sessions don't
@@ -1008,23 +1005,6 @@ final class AccountTrackerViewModel: ObservableObject {
                 preserved.deployment = priorRecord.deployment
                 recordsByID[record.id] = preserved
             } else {
-                recordsByID[record.id] = record
-            }
-        }
-
-        // Thousands of records share a few hundred paths, so the existence check is cached.
-        var existsByPath: [String: Bool] = [:]
-        for record in previous.records where recordsByID[record.id] == nil {
-            let exists: Bool
-            if let cached = existsByPath[record.filePath] {
-                exists = cached
-            } else {
-                exists = fileExists(record.filePath)
-                existsByPath[record.filePath] = exists
-            }
-            // The file is still there and the fresh scan did not produce this record, so the
-            // record is genuinely gone (re-derived away); only vanished files are preserved.
-            if !exists {
                 recordsByID[record.id] = record
             }
         }

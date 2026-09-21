@@ -58,8 +58,7 @@ final class RefreshCompletenessTests: XCTestCase {
 
         let merged = AccountTrackerViewModel.mergedPreservingVanishedFiles(
             previous: previous,
-            fresh: fresh,
-            fileExists: { _ in false }
+            fresh: fresh
         )
 
         XCTAssertEqual(merged.records.map(\.id), ["gone-1", "gone-2", "live-1"])
@@ -67,7 +66,7 @@ final class RefreshCompletenessTests: XCTestCase {
         XCTAssertEqual(merged.records.count, fresh.records.count + 2)
     }
 
-    func testRecordsFromFilesStillOnDiskAreDroppedWhenTheFreshScanNoLongerProducesThem() {
+    func testRecordsTheFreshScanNoLongerProducesAreKeptEvenWhenTheirFileStillExists() {
         let previous = result(provider: .claudeCode, records: [
             record(id: "stale-1", filePath: "/tmp/live.jsonl", seconds: 1)
         ])
@@ -77,11 +76,13 @@ final class RefreshCompletenessTests: XCTestCase {
 
         let merged = AccountTrackerViewModel.mergedPreservingVanishedFiles(
             previous: previous,
-            fresh: fresh,
-            fileExists: { _ in true }
+            fresh: fresh
         )
 
-        XCTAssertEqual(merged.records.map(\.id), ["live-1"])
+        // Codex rewrites its own rollout files, so a record missing from a fresh scan of a file
+        // that still exists is not proof the usage never happened. A refresh never drops.
+        XCTAssertEqual(merged.records.map(\.id), ["stale-1", "live-1"])
+        XCTAssertEqual(merged.records.count, previous.records.count + fresh.records.count)
     }
 
     func testMixedPresentAndVanishedPaths() {
@@ -95,12 +96,11 @@ final class RefreshCompletenessTests: XCTestCase {
 
         let merged = AccountTrackerViewModel.mergedPreservingVanishedFiles(
             previous: previous,
-            fresh: fresh,
-            fileExists: { $0 == "/tmp/live.jsonl" }
+            fresh: fresh
         )
 
-        XCTAssertEqual(merged.records.map(\.id), ["gone-1", "live-1"])
-        XCTAssertEqual(merged.records.count, fresh.records.count + 1)
+        XCTAssertEqual(merged.records.map(\.id), ["gone-1", "stale-1", "live-1"])
+        XCTAssertEqual(merged.records.count, fresh.records.count + 2)
     }
 
     // MARK: - Merge: guards and sticky labels
@@ -112,8 +112,7 @@ final class RefreshCompletenessTests: XCTestCase {
 
         let merged = AccountTrackerViewModel.mergedPreservingVanishedFiles(
             previous: previous,
-            fresh: AzureUsageScanResult(provider: .claudeCode),
-            fileExists: { _ in true }
+            fresh: AzureUsageScanResult(provider: .claudeCode)
         )
 
         XCTAssertEqual(merged, previous)
@@ -126,8 +125,7 @@ final class RefreshCompletenessTests: XCTestCase {
 
         let merged = AccountTrackerViewModel.mergedPreservingVanishedFiles(
             previous: AzureUsageScanResult(provider: .openai),
-            fresh: fresh,
-            fileExists: { _ in true }
+            fresh: fresh
         )
 
         XCTAssertEqual(merged, fresh)
@@ -157,8 +155,7 @@ final class RefreshCompletenessTests: XCTestCase {
 
         let merged = AccountTrackerViewModel.mergedPreservingVanishedFiles(
             previous: previous,
-            fresh: fresh,
-            fileExists: { _ in true }
+            fresh: fresh
         )
 
         XCTAssertEqual(merged.records.count, 1)
@@ -177,8 +174,7 @@ final class RefreshCompletenessTests: XCTestCase {
 
         let merged = AccountTrackerViewModel.mergedPreservingVanishedFiles(
             previous: previous,
-            fresh: fresh,
-            fileExists: { _ in true }
+            fresh: fresh
         )
 
         XCTAssertEqual(merged.records.map(\.endpoint), ["new-endpoint"])

@@ -196,7 +196,8 @@ final class PerRequestPricingTests: XCTestCase {
             ("claude-sonnet-5", 4.00),
             ("claude-sonnet-4-6", 6.00),
             ("claude-haiku-4-5", 2.00),
-            ("claude-3-5-haiku-20241022", 1.60)
+            ("claude-3-5-haiku-20241022", 1.60),
+            ("claude-3-haiku-20240307", 0.50)
         ]
         for (model, rate) in expected {
             XCTAssertEqual(
