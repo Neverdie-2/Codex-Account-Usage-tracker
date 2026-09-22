@@ -229,10 +229,12 @@ struct UsageHistoryChartView: View {
             } else {
                 ForEach(visibleSeries) { series in
                     ForEach(series.points) { point in
+                        // No explicit width: `.ratio` needs a banded x scale, and
+                        // this one is continuous dates, so it collapsed the bars to
+                        // nothing. The default width is derived from the spacing.
                         BarMark(
                             x: .value("Time", point.date),
-                            y: .value(metric.label(costLabel: configuration.costLabel), point.value),
-                            width: .ratio(0.85)
+                            y: .value(metric.label(costLabel: configuration.costLabel), point.value)
                         )
                         .foregroundStyle(by: .value("Series", series.name))
                     }
@@ -284,7 +286,7 @@ struct UsageHistoryChartView: View {
 
     private var xAxisFormat: Date.FormatStyle {
         switch result.bucketSize {
-        case .fiveMinutes, .hourly:
+        case .fiveMinutes, .fifteenMinutes, .hourly, .threeHours, .sixHours, .twelveHours:
             return .dateTime.hour().minute()
         case .daily, .weekly:
             return .dateTime.month(.abbreviated).day()

@@ -65,7 +65,11 @@ enum UsageHistoryGrouping: String, CaseIterable, Identifiable, Hashable {
 
 enum UsageHistoryBucketSize: String, CaseIterable, Identifiable, Hashable {
     case fiveMinutes
+    case fifteenMinutes
     case hourly
+    case threeHours
+    case sixHours
+    case twelveHours
     case daily
     case weekly
     case monthly
@@ -75,7 +79,11 @@ enum UsageHistoryBucketSize: String, CaseIterable, Identifiable, Hashable {
     var label: String {
         switch self {
         case .fiveMinutes: return "5 min"
+        case .fifteenMinutes: return "15 min"
         case .hourly: return "Hour"
+        case .threeHours: return "3 h"
+        case .sixHours: return "6 h"
+        case .twelveHours: return "12 h"
         case .daily: return "Day"
         case .weekly: return "Week"
         case .monthly: return "Month"
@@ -90,9 +98,27 @@ enum UsageHistoryBucketSize: String, CaseIterable, Identifiable, Hashable {
         return .monthly
     }
 
+    /// Bucket width for the fixed-length buckets (minutes or hours); nil for calendar buckets.
+    private var minuteWidth: Int? {
+        switch self {
+        case .fiveMinutes: return 5
+        case .fifteenMinutes: return 15
+        default: return nil
+        }
+    }
+
+    private var hourWidth: Int? {
+        switch self {
+        case .threeHours: return 3
+        case .sixHours: return 6
+        case .twelveHours: return 12
+        default: return nil
+        }
+    }
+
     fileprivate func start(of date: Date, calendar: Calendar) -> Date? {
         switch self {
-        case .fiveMinutes:
+        case .fiveMinutes, .fifteenMinutes:
             guard let minuteStart = calendar.dateInterval(of: .minute, for: date)?.start else {
                 return nil
             }
@@ -100,8 +126,15 @@ enum UsageHistoryBucketSize: String, CaseIterable, Identifiable, Hashable {
                 [.year, .month, .day, .hour, .minute],
                 from: minuteStart
             )
-            components.minute = (components.minute ?? 0) / 5 * 5
+            let width = minuteWidth ?? 5
+            components.minute = (components.minute ?? 0) / width * width
             components.second = 0
+            return calendar.date(from: components)
+        case .threeHours, .sixHours, .twelveHours:
+            // Fixed-width buckets aligned to the start of the local day (00, 03, 06 … for 3 h).
+            var components = calendar.dateComponents([.year, .month, .day, .hour], from: date)
+            let width = hourWidth ?? 1
+            components.hour = (components.hour ?? 0) / width * width
             return calendar.date(from: components)
         case .hourly:
             return calendar.dateInterval(of: .hour, for: date)?.start
@@ -116,10 +149,12 @@ enum UsageHistoryBucketSize: String, CaseIterable, Identifiable, Hashable {
 
     fileprivate func next(after date: Date, calendar: Calendar) -> Date? {
         switch self {
-        case .fiveMinutes:
-            return calendar.date(byAdding: .minute, value: 5, to: date)
+        case .fiveMinutes, .fifteenMinutes:
+            return calendar.date(byAdding: .minute, value: minuteWidth ?? 5, to: date)
         case .hourly:
             return calendar.date(byAdding: .hour, value: 1, to: date)
+        case .threeHours, .sixHours, .twelveHours:
+            return calendar.date(byAdding: .hour, value: hourWidth ?? 1, to: date)
         case .daily:
             return calendar.date(byAdding: .day, value: 1, to: date)
         case .weekly:
@@ -133,7 +168,11 @@ enum UsageHistoryBucketSize: String, CaseIterable, Identifiable, Hashable {
 enum UsageHistoryBucketSelection: String, CaseIterable, Identifiable, Hashable {
     case automatic
     case fiveMinutes
+    case fifteenMinutes
     case hourly
+    case threeHours
+    case sixHours
+    case twelveHours
     case daily
     case weekly
     case monthly
@@ -144,7 +183,11 @@ enum UsageHistoryBucketSelection: String, CaseIterable, Identifiable, Hashable {
         switch self {
         case .automatic: return "Auto"
         case .fiveMinutes: return UsageHistoryBucketSize.fiveMinutes.label
+        case .fifteenMinutes: return UsageHistoryBucketSize.fifteenMinutes.label
         case .hourly: return UsageHistoryBucketSize.hourly.label
+        case .threeHours: return UsageHistoryBucketSize.threeHours.label
+        case .sixHours: return UsageHistoryBucketSize.sixHours.label
+        case .twelveHours: return UsageHistoryBucketSize.twelveHours.label
         case .daily: return UsageHistoryBucketSize.daily.label
         case .weekly: return UsageHistoryBucketSize.weekly.label
         case .monthly: return UsageHistoryBucketSize.monthly.label
@@ -155,7 +198,11 @@ enum UsageHistoryBucketSelection: String, CaseIterable, Identifiable, Hashable {
         switch self {
         case .automatic: return nil
         case .fiveMinutes: return .fiveMinutes
+        case .fifteenMinutes: return .fifteenMinutes
         case .hourly: return .hourly
+        case .threeHours: return .threeHours
+        case .sixHours: return .sixHours
+        case .twelveHours: return .twelveHours
         case .daily: return .daily
         case .weekly: return .weekly
         case .monthly: return .monthly

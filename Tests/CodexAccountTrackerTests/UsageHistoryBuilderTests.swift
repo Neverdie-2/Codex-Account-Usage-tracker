@@ -90,6 +90,36 @@ final class UsageHistoryBuilderTests: XCTestCase {
         XCTAssertEqual(result.series[0].points.map(\.value), [150, 150, 0])
     }
 
+    func testManualFifteenMinuteAndMultiHourBucketsAlignToTheirWidth() {
+        // 15-minute buckets start at :00/:15/:30/:45; 3-hour buckets at 00/03/06 … of the local day.
+        let start = date("2026-01-01T00:00:00Z")
+        let quarter = build(
+            [record("a", at: start.addingTimeInterval(20 * 60)), record("b", at: start.addingTimeInterval(44 * 60))],
+            start: start,
+            end: start.addingTimeInterval(45 * 60),
+            bucketSize: .fifteenMinutes
+        )
+        XCTAssertEqual(quarter.bucketSize, .fifteenMinutes)
+        XCTAssertEqual(quarter.series[0].points.map(\.date), [
+            start, start.addingTimeInterval(15 * 60), start.addingTimeInterval(30 * 60), start.addingTimeInterval(45 * 60)
+        ])
+        XCTAssertEqual(quarter.series[0].points.map(\.value), [0, 150, 150, 0])
+
+        for (size, hours) in [(UsageHistoryBucketSize.threeHours, 3), (.sixHours, 6), (.twelveHours, 12)] {
+            let result = build(
+                [record("x", at: start.addingTimeInterval(Double(hours) * 3_600 + 60))],
+                start: start,
+                end: start.addingTimeInterval(Double(2 * hours) * 3_600),
+                bucketSize: size
+            )
+            XCTAssertEqual(result.bucketSize, size)
+            XCTAssertEqual(result.series[0].points.map(\.date), [
+                start, start.addingTimeInterval(Double(hours) * 3_600), start.addingTimeInterval(Double(2 * hours) * 3_600)
+            ], "\(size)")
+            XCTAssertEqual(result.series[0].points.map(\.value), [0, 150, 0], "\(size)")
+        }
+    }
+
     func testSelectsHourlyDailyWeeklyAndMonthlyBuckets() {
         let start = date("2026-01-01T00:00:00Z")
         XCTAssertEqual(build([record("h", at: start)], start: start, end: start.addingTimeInterval(48 * 3_600)).bucketSize, .hourly)
