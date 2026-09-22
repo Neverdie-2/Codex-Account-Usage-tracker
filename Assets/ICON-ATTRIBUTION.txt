@@ -1,0 +1,1 @@
+App icon: "CodexBar" icon by Peter Steinberger (https://github.com/steipete/CodexBar), MIT License, Copyright (c) 2026 Peter Steinberger. Assets/AppIcon-alt-classic.icns is the same project's "classic" icon. Previous icon kept in Assets/previous-icon-20260922/.
