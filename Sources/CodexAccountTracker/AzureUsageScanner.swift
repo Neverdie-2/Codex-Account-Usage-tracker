@@ -106,15 +106,28 @@ final class AzureUsageScanner {
 
         var endpointGroups: [String: AzureUsageGroup] = [:]
         var modelGroups: [String: AzureUsageGroup] = [:]
-        var unknownSpeedRecordCount = 0
-        var unknownSpeedExtraCostUSD = 0.0
+        var breakdown = AzureUsageCostBreakdown()
         var hasSolRecordAfterPromotionalPeriod = false
 
         for record in records {
             let pricing = AzureModelPricing.defaultPricing(for: record.model, provider: result.provider)
+            // Split each request's cost into base → +long-context tier → +Fast multiplier, the
+            // same order estimatedCost applies them, so the three parts add up to the total.
+            let base = pricing.estimatedCostAtStandardShortContext(for: record.usage)
+            let beforeFast = pricing.estimatedCostBeforeFastMode(for: record.usage)
+            let full = pricing.estimatedCost(for: record.usage)
+            breakdown.baseUSD += base
+            if beforeFast != base {
+                breakdown.longContextRequestCount += 1
+                breakdown.longContextExtraUSD += beforeFast - base
+            }
+            if full != beforeFast {
+                breakdown.fastModeRequestCount += 1
+                breakdown.fastModeExtraUSD += full - beforeFast
+            }
             if record.usage.speed == .unknown, pricing.fastModeMultiplier != nil {
-                unknownSpeedRecordCount += 1
-                unknownSpeedExtraCostUSD += pricing.estimatedCostIfFast(for: record.usage) - pricing.estimatedCost(for: record.usage)
+                breakdown.unknownSpeedRequestCount += 1
+                breakdown.unknownSpeedExtraUSD += pricing.estimatedCostIfFast(for: record.usage) - full
             }
             if pricing.modelPattern == solModelPattern, record.timestamp > solPromotionalPricingEnd {
                 hasSolRecordAfterPromotionalPeriod = true
@@ -155,10 +168,11 @@ final class AzureUsageScanner {
             dashboard.summary.warnings.append("\(result.provider.displayName) cost is estimated only for recognized pricing presets; unknown models show $0 estimated cost until rates are configured.")
         }
 
-        if unknownSpeedRecordCount > 0 {
+        dashboard.costBreakdown = breakdown
+        if breakdown.unknownSpeedRequestCount > 0 {
             dashboard.summary.warnings.append(
-                "\(unknownSpeedRecordCount) requests have no recorded speed setting and are priced at Standard; "
-                + "if all of them ran in Fast mode the estimate would be $\(String(format: "%.2f", unknownSpeedExtraCostUSD)) higher."
+                "\(breakdown.unknownSpeedRequestCount) requests have no recorded speed setting and are priced at Standard; "
+                + "if all of them ran in Fast mode the estimate would be $\(String(format: "%.2f", breakdown.unknownSpeedExtraUSD)) higher."
             )
         }
 

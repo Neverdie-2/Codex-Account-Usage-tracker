@@ -351,12 +351,24 @@ struct AzureModelPricing: Equatable, Codable {
         estimatedCost(for: usage, forcingFastMode: true)
     }
 
-    private func estimatedCost(for usage: AzureTokenUsage, forcingFastMode: Bool) -> Double {
+    /// What the request would cost at plain short-context Standard rates, ignoring the
+    /// long-context tier and the Fast-mode multiplier. The dashboard's cost breakdown uses it
+    /// as the base against which those two uplifts are shown.
+    func estimatedCostAtStandardShortContext(for usage: AzureTokenUsage) -> Double {
+        estimatedCost(for: usage, forcingFastMode: false, applyingLongContext: false)
+    }
+
+    /// Cost with the long-context tier applied (when it applies) but never the Fast multiplier.
+    func estimatedCostBeforeFastMode(for usage: AzureTokenUsage) -> Double {
+        estimatedCost(for: usage, forcingFastMode: false)
+    }
+
+    private func estimatedCost(for usage: AzureTokenUsage, forcingFastMode: Bool, applyingLongContext: Bool = true) -> Double {
         let inputRate: Double
         let cachedRate: Double
         let cacheWriteRate: Double
         let outputRate: Double
-        if let longContext, usage.inputTokens > longContext.thresholdInputTokens {
+        if applyingLongContext, let longContext, usage.inputTokens > longContext.thresholdInputTokens {
             inputRate = longContext.inputPerMillionUSD
             cachedRate = longContext.cachedInputPerMillionUSD
             cacheWriteRate = longContext.cacheWritePerMillionUSD ?? longContext.inputPerMillionUSD
@@ -1238,8 +1250,40 @@ struct AzureUsageScanResult: Equatable, Codable {
     static let empty = AzureUsageScanResult()
 }
 
+/// How the estimated cost of the records in view splits into the plain short-context Standard
+/// price and the two per-request uplifts (long-context tier, Fast mode). Codex on the ChatGPT
+/// plan is the only provider with those uplifts today; for the others every extra is zero.
+struct AzureUsageCostBreakdown: Equatable, Codable {
+    var baseUSD = 0.0
+    var longContextExtraUSD = 0.0
+    var longContextRequestCount = 0
+    var fastModeExtraUSD = 0.0
+    var fastModeRequestCount = 0
+    var unknownSpeedRequestCount = 0
+    /// How much higher the estimate would be if every unknown-speed request had run in Fast mode.
+    var unknownSpeedExtraUSD = 0.0
+
+    var hasUplifts: Bool {
+        longContextRequestCount > 0 || fastModeRequestCount > 0 || unknownSpeedRequestCount > 0
+    }
+
+    init() {}
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        baseUSD = try container.decodeIfPresent(Double.self, forKey: .baseUSD) ?? 0
+        longContextExtraUSD = try container.decodeIfPresent(Double.self, forKey: .longContextExtraUSD) ?? 0
+        longContextRequestCount = try container.decodeIfPresent(Int.self, forKey: .longContextRequestCount) ?? 0
+        fastModeExtraUSD = try container.decodeIfPresent(Double.self, forKey: .fastModeExtraUSD) ?? 0
+        fastModeRequestCount = try container.decodeIfPresent(Int.self, forKey: .fastModeRequestCount) ?? 0
+        unknownSpeedRequestCount = try container.decodeIfPresent(Int.self, forKey: .unknownSpeedRequestCount) ?? 0
+        unknownSpeedExtraUSD = try container.decodeIfPresent(Double.self, forKey: .unknownSpeedExtraUSD) ?? 0
+    }
+}
+
 struct AzureUsageDashboard: Equatable, Codable {
     var totals = AzureUsageTokenTotals()
+    var costBreakdown = AzureUsageCostBreakdown()
     var byEndpointDeployment: [AzureUsageGroup] = []
     var byModel: [AzureUsageGroup] = []
     var byProject: [AzureUsageProjectGroup] = []

@@ -367,3 +367,56 @@ final class PerRequestPricingTests: XCTestCase {
         )
     }
 }
+
+// MARK: - Cost breakdown (base / long-context / Fast mode)
+
+extension PerRequestPricingTests {
+    func testCostBreakdownSplitsBaseLongContextAndFastAndAddsUpToTheTotal() {
+        // Astra, https://developers.openai.com/api/docs/pricing (read 2026-09-21):
+        // short $10 in / $50 out; long (>272,000 input) $20 in / $75 out; Codex Fast = 2.5x.
+        // a) 100,000 in + 10,000 out, standard        → $1.00 + $0.50 = $1.50 base, no uplifts
+        // b) 300,000 in + 10,000 out, standard        → base $3.00 + $0.50 = $3.50; long $6.00 + $0.75 = $6.75 → +$3.25
+        // c) 300,000 in + 10,000 out, FAST            → long $6.75, fast $16.875 → long +$3.25, fast +$10.125
+        // d) 100,000 in + 10,000 out, speed unknown   → $1.50 base; fast would add $2.25
+        let mk: (Int, AzureUsageSpeed) -> AzureTokenUsage = { input, speed in
+            self.usage(input: input, output: 10_000, speed: speed)
+        }
+        var result = AzureUsageScanResult(provider: .openai)
+        result.records = [
+            record(id: "a", model: "gpt-6-astra", usage: mk(100_000, .standard), timestamp: Date(timeIntervalSince1970: 1_780_000_000)),
+            record(id: "b", model: "gpt-6-astra", usage: mk(300_000, .standard), timestamp: Date(timeIntervalSince1970: 1_780_000_001)),
+            record(id: "c", model: "gpt-6-astra", usage: mk(300_000, .fast), timestamp: Date(timeIntervalSince1970: 1_780_000_002)),
+            record(id: "d", model: "gpt-6-astra", usage: mk(100_000, .unknown), timestamp: Date(timeIntervalSince1970: 1_780_000_003))
+        ]
+
+        let b = AzureUsageScanner.dashboard(from: result, window: .allTime, customStartDate: Date()).costBreakdown
+        XCTAssertEqual(b.baseUSD, 1.50 + 3.50 + 3.50 + 1.50, accuracy: 0.000001)
+        XCTAssertEqual(b.longContextRequestCount, 2)
+        XCTAssertEqual(b.longContextExtraUSD, 3.25 + 3.25, accuracy: 0.000001)
+        XCTAssertEqual(b.fastModeRequestCount, 1)
+        XCTAssertEqual(b.fastModeExtraUSD, 10.125, accuracy: 0.000001)
+        XCTAssertEqual(b.unknownSpeedRequestCount, 1)
+        XCTAssertEqual(b.unknownSpeedExtraUSD, 2.25, accuracy: 0.000001)
+        // Input cardinality: the three parts reproduce the dashboard total exactly.
+        let total = AzureUsageScanner.dashboard(from: result, window: .allTime, customStartDate: Date()).totals.estimatedCostUSD
+        XCTAssertEqual(b.baseUSD + b.longContextExtraUSD + b.fastModeExtraUSD, total, accuracy: 0.000001)
+        XCTAssertEqual(total, 1.50 + 6.75 + 16.875 + 1.50, accuracy: 0.000001)
+        XCTAssertTrue(b.hasUplifts)
+    }
+
+    func testCostBreakdownHasNoUpliftsForProvidersWithoutThem() {
+        // Claude Code presets carry no long-context tier and no Fast multiplier.
+        var result = AzureUsageScanResult(provider: .claudeCode)
+        result.records = [
+            record(id: "a", model: "claude-fable-5-1", usage: usage(input: 400_000, output: 10_000, speed: .standard), timestamp: Date(timeIntervalSince1970: 1_780_000_000))
+        ]
+        let b = AzureUsageScanner.dashboard(from: result, window: .allTime, customStartDate: Date()).costBreakdown
+        XCTAssertFalse(b.hasUplifts)
+        XCTAssertEqual(b.baseUSD, 4.00 + 0.50, accuracy: 0.000001)
+    }
+
+    func testCostBreakdownDecodesFromJSONWithoutTheNewKeys() throws {
+        let decoded = try JSONDecoder().decode(AzureUsageCostBreakdown.self, from: Data("{}".utf8))
+        XCTAssertEqual(decoded, AzureUsageCostBreakdown())
+    }
+}
