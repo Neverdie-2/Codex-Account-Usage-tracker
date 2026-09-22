@@ -67,3 +67,25 @@ cached = 0.
 - Wrong label for old turns if the operator swaps the llama-server model later: label is the CURRENT
   model for all turns (documented limitation; same as LM Studio "lastUsedModel" fallback).
 - Main-thread freeze: scan runs in `Task.detached(priority: .utility)` like the LM Studio refresh.
+
+## Revision 2026-09-22 ~17:00 — panel replaced: images, not chat tokens
+
+Operator, after seeing the token panel: the tokens counted were the chat assistant's (Huihui
+Qwen3.6 35B behind Open WebUI), not Qwen Image 2.1's. "I wanna track the tokens used by the image
+model itself" → the image model reports no tokens anywhere (ComfyUI logs only a run time; every
+cloud host bills it per image), so the panel now counts finished pictures ("okay then 1 instead of
+what build cause I dont need it").
+
+- Provider renamed `.qwenImage` ("qwen-image"), panel "Qwen Image Usage" replaces "Open WebUI Usage".
+- `QwenImageUsageStore` reads `file` rows named `generated-image.png` (one per finished picture:
+  time, size, width×height, steps, model from the stored ComfyUI graph — the prompt fields are never
+  read) plus the `chat` table only to map picture → chat id through `history.messages[*].files`.
+- `AzureTokenUsage.imageCount` (decodeIfPresent, NOT part of the dedupe `signature`),
+  `AzureUsageTokenTotals.imageCount`, `AzureModelPricing.perImageUSD` (added to `estimatedCost`),
+  chart metric `.images`, `UsageHistoryPanelConfiguration.unit` (.tokens/.images) drives the totals
+  row ("Images", "Chats", "Est. saved") and the two tables ("Images", "Saved $"); "By project" keeps
+  its token columns (all 0 for pictures).
+- Reference price: fal.ai Qwen Image 2.0 edit $0.035/image (no 2.1 API exists) — ESTIMATE.
+- VERIFIED live: 126 records = 126 `generated-image.png` rows recounted directly; 1 picture has no
+  chat link (an early API test); no prompt text in the cache.
+- The old `open-webui-usage-cache.json` in Application Support is orphaned (harmless, ~100 KB).

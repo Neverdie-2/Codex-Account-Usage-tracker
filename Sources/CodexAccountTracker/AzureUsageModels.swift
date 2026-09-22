@@ -91,7 +91,7 @@ enum CodexLogUsageProvider: String, Equatable, Codable {
     case claudeCode = "claude-code"
     case lmStudio = "lm-studio"
     case claudeAzure = "claude-azure"
-    case openWebUI = "open-webui"
+    case qwenImage = "qwen-image"
 
     var displayName: String {
         switch self {
@@ -100,7 +100,7 @@ enum CodexLogUsageProvider: String, Equatable, Codable {
         case .claudeCode: return "Claude Code"
         case .lmStudio: return "LM Studio"
         case .claudeAzure: return "Claude Azure"
-        case .openWebUI: return "Open WebUI"
+        case .qwenImage: return "Qwen Image"
         }
     }
 
@@ -111,7 +111,7 @@ enum CodexLogUsageProvider: String, Equatable, Codable {
         case .claudeCode: return "Claude Code sessions"
         case .lmStudio: return "LM Studio chats"
         case .claudeAzure: return "Claude Azure requests"
-        case .openWebUI: return "Open WebUI chats"
+        case .qwenImage: return "Qwen Image chats"
         }
     }
 
@@ -121,7 +121,7 @@ enum CodexLogUsageProvider: String, Equatable, Codable {
     var costLabel: String {
         switch self {
         case .azure, .openai, .claudeCode, .claudeAzure: return "Est. cost"
-        case .lmStudio, .openWebUI: return "Est. saved"
+        case .lmStudio, .qwenImage: return "Est. saved"
         }
     }
 
@@ -129,7 +129,7 @@ enum CodexLogUsageProvider: String, Equatable, Codable {
     var costShortLabel: String {
         switch self {
         case .azure, .openai, .claudeCode, .claudeAzure: return "Est."
-        case .lmStudio, .openWebUI: return "Saved"
+        case .lmStudio, .qwenImage: return "Saved"
         }
     }
 
@@ -139,7 +139,7 @@ enum CodexLogUsageProvider: String, Equatable, Codable {
             return "Azure endpoint/resource could not be reliably discovered from local logs or safe config metadata; grouped as unknown endpoint."
         case .openai:
             return "OpenAI Codex usage excludes Azure sessions; Azure usage remains in the separate Azure dashboard."
-        case .claudeCode, .lmStudio, .claudeAzure, .openWebUI:
+        case .claudeCode, .lmStudio, .claudeAzure, .qwenImage:
             return ""
         }
     }
@@ -248,6 +248,7 @@ struct AzureUsageTokenTotals: Equatable, Codable {
     var reasoningOutputTokens = 0
     var totalTokens = 0
     var eventCount = 0
+    var imageCount = 0
     var estimatedCostUSD = 0.0
 
     var isEmpty: Bool {
@@ -267,6 +268,7 @@ struct AzureUsageTokenTotals: Equatable, Codable {
         reasoningOutputTokens += usage.reasoningOutputTokens
         totalTokens += usage.totalTokens
         eventCount += 1
+        imageCount += usage.imageCount
         estimatedCostUSD += pricing.estimatedCost(for: usage)
     }
 
@@ -280,6 +282,7 @@ struct AzureUsageTokenTotals: Equatable, Codable {
         reasoningOutputTokens = try container.decodeIfPresent(Int.self, forKey: .reasoningOutputTokens) ?? 0
         totalTokens = try container.decodeIfPresent(Int.self, forKey: .totalTokens) ?? 0
         eventCount = try container.decodeIfPresent(Int.self, forKey: .eventCount) ?? 0
+        imageCount = try container.decodeIfPresent(Int.self, forKey: .imageCount) ?? 0
         estimatedCostUSD = try container.decodeIfPresent(Double.self, forKey: .estimatedCostUSD) ?? 0
     }
 
@@ -338,6 +341,9 @@ struct AzureModelPricing: Equatable, Codable {
     var longContext: AzureLongContextRates?
     /// Set only where a Fast-mode surcharge is known to apply (Codex on the ChatGPT plan).
     var fastModeMultiplier: Double?
+    /// Reference price per finished picture, for image models (they bill per image, not
+    /// per token). nil for text models.
+    var perImageUSD: Double?
     var isKnown: Bool
 
     var effectiveCacheWritePerMillionUSD: Double {
@@ -396,11 +402,13 @@ struct AzureModelPricing: Equatable, Codable {
         if forcingFastMode, let fastModeMultiplier {
             cost *= fastModeMultiplier
         }
+        cost += Double(usage.imageCount) * (perImageUSD ?? 0)
         return cost
     }
 
     var rateSummary: String {
         guard isKnown else { return "pricing unknown" }
+        if let perImageUSD { return "$\(String(format: "%.3f", perImageUSD))/image" }
         var parts: [String] = ["in \(Self.usd(inputPerMillionUSD))/M"]
         if let cacheWritePerMillionUSD, cacheWritePerMillionUSD != inputPerMillionUSD {
             parts.append("write \(Self.usd(cacheWritePerMillionUSD))/M")
@@ -420,6 +428,7 @@ struct AzureModelPricing: Equatable, Codable {
         cacheWrite1hPerMillionUSD: Double? = nil,
         longContext: AzureLongContextRates? = nil,
         fastModeMultiplier: Double? = nil,
+        perImageUSD: Double? = nil,
         isKnown: Bool
     ) {
         self.modelPattern = modelPattern
@@ -431,6 +440,7 @@ struct AzureModelPricing: Equatable, Codable {
         self.cacheWrite1hPerMillionUSD = cacheWrite1hPerMillionUSD
         self.longContext = longContext
         self.fastModeMultiplier = fastModeMultiplier
+        self.perImageUSD = perImageUSD
         self.isKnown = isKnown
     }
 
@@ -447,6 +457,7 @@ struct AzureModelPricing: Equatable, Codable {
         cacheWrite1hPerMillionUSD = try container.decodeIfPresent(Double.self, forKey: .cacheWrite1hPerMillionUSD)
         longContext = try container.decodeIfPresent(AzureLongContextRates.self, forKey: .longContext)
         fastModeMultiplier = try container.decodeIfPresent(Double.self, forKey: .fastModeMultiplier)
+        perImageUSD = try container.decodeIfPresent(Double.self, forKey: .perImageUSD)
         isKnown = try container.decode(Bool.self, forKey: .isKnown)
     }
 
@@ -474,7 +485,34 @@ struct AzureModelPricing: Equatable, Codable {
             )
         }
 
-        if provider == .lmStudio || provider == .openWebUI {
+        if provider == .qwenImage {
+            // Qwen Image 2.1 has no paid API of its own (research licence); the nearest
+            // published price is fal.ai's Qwen Image 2.0 edit endpoint, $0.035 per image
+            // (https://fal.ai/models/fal-ai/qwen-image-2/edit, read 2026-09-22).
+            if normalized.contains("qwen-image") {
+                return AzureModelPricing(
+                    modelPattern: "qwen-image",
+                    displayName: "Qwen Image API reference (fal.ai, per image)",
+                    inputPerMillionUSD: 0,
+                    cachedInputPerMillionUSD: 0,
+                    cacheWritePerMillionUSD: nil,
+                    outputPerMillionUSD: 0,
+                    perImageUSD: 0.035,
+                    isKnown: true
+                )
+            }
+            return AzureModelPricing(
+                modelPattern: "qwen-image-local",
+                displayName: "Local image model (no API equivalent)",
+                inputPerMillionUSD: 0,
+                cachedInputPerMillionUSD: 0,
+                cacheWritePerMillionUSD: nil,
+                outputPerMillionUSD: 0,
+                isKnown: false
+            )
+        }
+
+        if provider == .lmStudio {
             // These are community fine-tunes with no API pricing of their own.
             // Estimate savings against the OpenRouter list price of the base
             // model each is derived from. Models with no API equivalent are left
@@ -996,6 +1034,9 @@ struct AzureTokenUsage: Equatable, Hashable, Codable {
     /// Speed setting this request ran at. `.unknown` for records parsed from logs that
     /// predate the setting being recorded.
     var speed: AzureUsageSpeed
+    /// Pictures finished by an image model in this request. Image models report no
+    /// tokens, so this is their whole usage; 0 for every text request.
+    var imageCount: Int
 
     var uncachedInputTokens: Int {
         max(0, inputTokens - cachedInputTokens - cacheCreationInputTokens)
@@ -1022,7 +1063,8 @@ struct AzureTokenUsage: Equatable, Hashable, Codable {
             outputTokens: newOutputTokens,
             reasoningOutputTokens: reasoningOutputTokens,
             totalTokens: inputTokens + newOutputTokens,
-            speed: speed
+            speed: speed,
+            imageCount: imageCount
         )
     }
 
@@ -1034,7 +1076,8 @@ struct AzureTokenUsage: Equatable, Hashable, Codable {
         outputTokens: Int,
         reasoningOutputTokens: Int,
         totalTokens: Int,
-        speed: AzureUsageSpeed = .standard
+        speed: AzureUsageSpeed = .standard,
+        imageCount: Int = 0
     ) {
         self.inputTokens = inputTokens
         self.cachedInputTokens = cachedInputTokens
@@ -1044,6 +1087,7 @@ struct AzureTokenUsage: Equatable, Hashable, Codable {
         self.reasoningOutputTokens = reasoningOutputTokens
         self.totalTokens = totalTokens
         self.speed = speed
+        self.imageCount = imageCount
     }
 
     /// The new per-request fields are decoded with `decodeIfPresent`: the live usage caches are
@@ -1059,6 +1103,7 @@ struct AzureTokenUsage: Equatable, Hashable, Codable {
         reasoningOutputTokens = try container.decode(Int.self, forKey: .reasoningOutputTokens)
         totalTokens = try container.decode(Int.self, forKey: .totalTokens)
         speed = try container.decodeIfPresent(AzureUsageSpeed.self, forKey: .speed) ?? .unknown
+        imageCount = try container.decodeIfPresent(Int.self, forKey: .imageCount) ?? 0
     }
 }
 
@@ -1198,7 +1243,7 @@ struct AzureUsageProjectGroup: Equatable, Identifiable, Codable {
         projectPath == AzureUsageRecord.unknownProject
             || projectPath == AzureUsageRecord.chatProject
             || projectPath == LMStudioConversationStore.chatProject
-            || projectPath == OpenWebUIUsageStore.chatProject
+            || projectPath == QwenImageUsageStore.chatProject
     }
 }
 

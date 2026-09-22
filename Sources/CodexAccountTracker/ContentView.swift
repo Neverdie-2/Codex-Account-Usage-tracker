@@ -18,7 +18,7 @@ struct ContentView: View {
                         ClaudeCodeUsageSectionView()
                         ClaudeAzureUsageSectionView()
                         LMStudioUsageSectionView()
-                        OpenWebUIUsageSectionView()
+                        QwenImageUsageSectionView()
                     }
                     .padding(20)
                 }
@@ -65,7 +65,7 @@ struct ContentView: View {
                         ClaudeCodeUsageSectionView()
                         ClaudeAzureUsageSectionView()
                         LMStudioUsageSectionView()
-                        OpenWebUIUsageSectionView()
+                        QwenImageUsageSectionView()
                     }
                     .padding(20)
                 }
@@ -758,40 +758,40 @@ private struct LMStudioUsageSectionView: View {
     }
 }
 
-private struct OpenWebUIUsageSectionView: View {
+private struct QwenImageUsageSectionView: View {
     @EnvironmentObject private var viewModel: AccountTrackerViewModel
 
     var body: some View {
         CodexLogUsageSectionView(
-            title: "Open WebUI Usage",
-            subtitle: "Local Open WebUI chat assistant (Qwen Image Editor) — free to run; savings vs the base model's API rate",
-            dashboard: viewModel.openWebUIUsage,
-            historyRecords: viewModel.openWebUIUsageHistoryRecords,
-            historyRecordsRevision: viewModel.openWebUIUsageHistoryRevision,
-            historyStartDate: viewModel.openWebUIUsageScanMode.startDate(now: viewModel.displayNow, customStartDate: viewModel.openWebUICustomStartDate),
+            title: "Qwen Image Usage",
+            subtitle: "Images made locally by Qwen Image 2.1 through Open WebUI — free to run; savings vs the Qwen Image API price per image",
+            dashboard: viewModel.qwenImageUsage,
+            historyRecords: viewModel.qwenImageUsageHistoryRecords,
+            historyRecordsRevision: viewModel.qwenImageUsageHistoryRevision,
+            historyStartDate: viewModel.qwenImageUsageScanMode.startDate(now: viewModel.displayNow, customStartDate: viewModel.qwenImageCustomStartDate),
             historyEndDate: viewModel.displayNow,
-            historyConfiguration: .openWebUI,
-            historyIsCollapsed: viewModel.isSectionCollapsed(AccountTrackerViewModel.CollapsibleSection.openWebUIUsageHistory),
+            historyConfiguration: .qwenImage,
+            historyIsCollapsed: viewModel.isSectionCollapsed(AccountTrackerViewModel.CollapsibleSection.qwenImageUsageHistory),
             onToggleHistoryCollapse: {
-                viewModel.toggleSectionCollapsed(AccountTrackerViewModel.CollapsibleSection.openWebUIUsageHistory)
+                viewModel.toggleSectionCollapsed(AccountTrackerViewModel.CollapsibleSection.qwenImageUsageHistory)
             },
-            isRefreshing: viewModel.isOpenWebUIRefreshing,
-            lastScannedAt: viewModel.openWebUILastScannedAt,
-            scanMode: $viewModel.openWebUIUsageScanMode,
-            customStartDate: $viewModel.openWebUICustomStartDate,
-            sessionCounterLabel: CodexLogUsageProvider.openWebUI.sessionCounterLabel,
-            costLabel: CodexLogUsageProvider.openWebUI.costLabel,
-            costColumnTitle: "\(CodexLogUsageProvider.openWebUI.costShortLabel) $",
-            endpointTableTitle: "By model",
-            emptyText: "No Open WebUI turns counted yet. Chat in the Qwen Image Editor and click Refresh.",
+            isRefreshing: viewModel.isQwenImageRefreshing,
+            lastScannedAt: viewModel.qwenImageLastScannedAt,
+            scanMode: $viewModel.qwenImageUsageScanMode,
+            customStartDate: $viewModel.qwenImageCustomStartDate,
+            sessionCounterLabel: CodexLogUsageProvider.qwenImage.sessionCounterLabel,
+            costLabel: CodexLogUsageProvider.qwenImage.costLabel,
+            costColumnTitle: "\(CodexLogUsageProvider.qwenImage.costShortLabel) $",
+            endpointTableTitle: "By kind",
+            emptyText: "No Qwen Image pictures counted yet. Edit a picture in the Qwen Image Editor and click Refresh.",
             endpointLabel: { group in
-                "\(group.endpoint) • \(group.deployment)"
+                group.resource
             },
-            refresh: viewModel.refreshOpenWebUIUsage,
-            isCollapsed: viewModel.isSectionCollapsed(AccountTrackerViewModel.CollapsibleSection.openWebUIUsage),
+            refresh: viewModel.refreshQwenImageUsage,
+            isCollapsed: viewModel.isSectionCollapsed(AccountTrackerViewModel.CollapsibleSection.qwenImageUsage),
             onToggleCollapse: {
                 withAnimation(.easeInOut(duration: 0.18)) {
-                    viewModel.toggleSectionCollapsed(AccountTrackerViewModel.CollapsibleSection.openWebUIUsage)
+                    viewModel.toggleSectionCollapsed(AccountTrackerViewModel.CollapsibleSection.qwenImageUsage)
                 }
             }
         )
@@ -1031,14 +1031,19 @@ private struct CodexLogUsageSectionView: View {
 
             if !isCollapsed {
                 HStack(spacing: 12) {
-                    AzureUsageTotalPanel(title: "Input", value: dashboard.totals.inputTokens)
-                    AzureUsageTotalPanel(title: "Cached", value: dashboard.totals.cachedInputTokens)
-                    if dashboard.totals.cacheCreationInputTokens > 0 {
-                        AzureUsageTotalPanel(title: "Cache write", value: dashboard.totals.cacheCreationInputTokens)
+                    if historyConfiguration.unit == .images {
+                        AzureUsageTotalPanel(title: "Images", value: dashboard.totals.imageCount)
+                        AzureUsageTotalPanel(title: "Chats", value: dashboard.byProject.reduce(0) { $0 + $1.sessionCount })
+                    } else {
+                        AzureUsageTotalPanel(title: "Input", value: dashboard.totals.inputTokens)
+                        AzureUsageTotalPanel(title: "Cached", value: dashboard.totals.cachedInputTokens)
+                        if dashboard.totals.cacheCreationInputTokens > 0 {
+                            AzureUsageTotalPanel(title: "Cache write", value: dashboard.totals.cacheCreationInputTokens)
+                        }
+                        AzureUsageTotalPanel(title: "Uncached", value: dashboard.totals.uncachedInputTokens)
+                        AzureUsageTotalPanel(title: "Output", value: dashboard.totals.outputTokens)
+                        AzureUsageTotalPanel(title: "Total", value: dashboard.totals.totalTokens)
                     }
-                    AzureUsageTotalPanel(title: "Uncached", value: dashboard.totals.uncachedInputTokens)
-                    AzureUsageTotalPanel(title: "Output", value: dashboard.totals.outputTokens)
-                    AzureUsageTotalPanel(title: "Total", value: dashboard.totals.totalTokens)
                     AzureUsageCostPanel(title: costLabel, value: dashboard.totals.estimatedCostUSD)
                 }
 
@@ -1062,6 +1067,7 @@ private struct CodexLogUsageSectionView: View {
                         groups: dashboard.byEndpointDeployment,
                         emptyText: emptyText,
                         costColumnTitle: costColumnTitle,
+                        unit: historyConfiguration.unit,
                         label: endpointLabel
                     )
 
@@ -1070,6 +1076,7 @@ private struct CodexLogUsageSectionView: View {
                         groups: dashboard.byModel,
                         emptyText: emptyText,
                         costColumnTitle: costColumnTitle,
+                        unit: historyConfiguration.unit,
                         label: { group in
                             "\(group.model) • \(group.pricing.rateSummary)"
                         }
@@ -1239,6 +1246,7 @@ private struct AzureUsageTableView: View {
     let groups: [AzureUsageGroup]
     let emptyText: String
     let costColumnTitle: String
+    let unit: AzureUsageUnit
     let label: (AzureUsageGroup) -> String
 
     init(
@@ -1246,12 +1254,14 @@ private struct AzureUsageTableView: View {
         groups: [AzureUsageGroup],
         emptyText: String = "No token events counted for this window",
         costColumnTitle: String = "Est. $",
+        unit: AzureUsageUnit = .tokens,
         label: @escaping (AzureUsageGroup) -> String
     ) {
         self.title = title
         self.groups = groups
         self.emptyText = emptyText
         self.costColumnTitle = costColumnTitle
+        self.unit = unit
         self.label = label
     }
 
@@ -1267,9 +1277,9 @@ private struct AzureUsageTableView: View {
                     .frame(maxWidth: .infinity, minHeight: 72, alignment: .center)
             } else {
                 VStack(spacing: 0) {
-                    AzureUsageHeaderRow(costColumnTitle: costColumnTitle)
+                    AzureUsageHeaderRow(costColumnTitle: costColumnTitle, unit: unit)
                     ForEach(groups.prefix(8)) { group in
-                        AzureUsageRow(title: label(group), totals: group.totals)
+                        AzureUsageRow(title: label(group), totals: group.totals, unit: unit)
                         if group.id != groups.prefix(8).last?.id {
                             Divider()
                         }
@@ -1286,23 +1296,29 @@ private struct AzureUsageTableView: View {
 
 private struct AzureUsageHeaderRow: View {
     var costColumnTitle = "Est. $"
+    var unit: AzureUsageUnit = .tokens
 
     var body: some View {
         HStack(spacing: 8) {
             Text("Name")
                 .frame(maxWidth: .infinity, alignment: .leading)
-            Text("Events")
-                .frame(width: AzureUsageColumnWidth.events, alignment: .trailing)
-            Text("Input")
-                .frame(width: AzureUsageColumnWidth.tokens, alignment: .trailing)
-            Text("Cached")
-                .frame(width: AzureUsageColumnWidth.cached, alignment: .trailing)
-            Text("Uncached")
-                .frame(width: AzureUsageColumnWidth.uncached, alignment: .trailing)
-            Text("Output")
-                .frame(width: AzureUsageColumnWidth.output, alignment: .trailing)
-            Text("Total")
-                .frame(width: AzureUsageColumnWidth.total, alignment: .trailing)
+            if unit == .images {
+                Text("Images")
+                    .frame(width: AzureUsageColumnWidth.total, alignment: .trailing)
+            } else {
+                Text("Events")
+                    .frame(width: AzureUsageColumnWidth.events, alignment: .trailing)
+                Text("Input")
+                    .frame(width: AzureUsageColumnWidth.tokens, alignment: .trailing)
+                Text("Cached")
+                    .frame(width: AzureUsageColumnWidth.cached, alignment: .trailing)
+                Text("Uncached")
+                    .frame(width: AzureUsageColumnWidth.uncached, alignment: .trailing)
+                Text("Output")
+                    .frame(width: AzureUsageColumnWidth.output, alignment: .trailing)
+                Text("Total")
+                    .frame(width: AzureUsageColumnWidth.total, alignment: .trailing)
+            }
             Text(costColumnTitle)
                 .frame(width: AzureUsageColumnWidth.cost, alignment: .trailing)
         }
@@ -1315,6 +1331,7 @@ private struct AzureUsageHeaderRow: View {
 private struct AzureUsageRow: View {
     let title: String
     let totals: AzureUsageTokenTotals
+    var unit: AzureUsageUnit = .tokens
 
     var body: some View {
         HStack(spacing: 8) {
@@ -1323,6 +1340,13 @@ private struct AzureUsageRow: View {
                 .lineLimit(2)
                 .textSelection(.enabled)
                 .frame(maxWidth: .infinity, alignment: .leading)
+            if unit == .images {
+                Text(AzureUsageFormat.integer(totals.imageCount))
+                    .monospacedDigit()
+                    .lineLimit(1)
+                    .textSelection(.enabled)
+                    .frame(width: AzureUsageColumnWidth.total, alignment: .trailing)
+            } else {
             Text(AzureUsageFormat.integer(totals.eventCount))
                 .monospacedDigit()
                 .lineLimit(1)
@@ -1353,6 +1377,7 @@ private struct AzureUsageRow: View {
                 .lineLimit(1)
                 .textSelection(.enabled)
                 .frame(width: AzureUsageColumnWidth.total, alignment: .trailing)
+            }
             Text(AzureUsageFormat.usd(totals.estimatedCostUSD))
                 .monospacedDigit()
                 .lineLimit(1)

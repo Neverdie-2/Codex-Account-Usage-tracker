@@ -8,6 +8,7 @@ enum UsageHistoryMetric: String, CaseIterable, Identifiable, Hashable {
     case uncachedInput
     case outputTokens
     case events
+    case images
     case estimatedCost
 
     var id: String { rawValue }
@@ -21,6 +22,7 @@ enum UsageHistoryMetric: String, CaseIterable, Identifiable, Hashable {
         case .uncachedInput: return "Uncached input"
         case .outputTokens: return "Output tokens"
         case .events: return "Events"
+        case .images: return "Images"
         case .estimatedCost: return "Estimated cost"
         }
     }
@@ -38,6 +40,7 @@ enum UsageHistoryMetric: String, CaseIterable, Identifiable, Hashable {
         case .uncachedInput: return Double(totals.uncachedInputTokens)
         case .outputTokens: return Double(totals.outputTokens)
         case .events: return Double(totals.eventCount)
+        case .images: return Double(totals.imageCount)
         case .estimatedCost: return totals.estimatedCostUSD
         }
     }
@@ -238,12 +241,24 @@ struct UsageHistoryFilterOptions: Equatable {
     var secondary: [String] = []
 }
 
+/// What a panel counts. Text models count tokens; image models count finished pictures.
+enum AzureUsageUnit: Equatable {
+    case tokens
+    case images
+}
+
 struct UsageHistoryPanelConfiguration: Equatable {
     let provider: CodexLogUsageProvider
     let collapseID: String
     let costLabel: String
     let groupings: [UsageHistoryGrouping]
     let filterGrouping: UsageHistoryGrouping?
+    var unit: AzureUsageUnit = .tokens
+
+    /// The chart metric a panel opens on: total tokens for text panels, images for image panels.
+    var defaultMetric: UsageHistoryMetric {
+        unit == .images ? .images : .totalTokens
+    }
 
     static let azure = UsageHistoryPanelConfiguration(
         provider: .azure,
@@ -285,12 +300,13 @@ struct UsageHistoryPanelConfiguration: Equatable {
         filterGrouping: .source
     )
 
-    static let openWebUI = UsageHistoryPanelConfiguration(
-        provider: .openWebUI,
-        collapseID: AccountTrackerViewModel.CollapsibleSection.openWebUIUsageHistory,
+    static let qwenImage = UsageHistoryPanelConfiguration(
+        provider: .qwenImage,
+        collapseID: AccountTrackerViewModel.CollapsibleSection.qwenImageUsageHistory,
         costLabel: "Estimated savings",
         groupings: [.model, .project, .source],
-        filterGrouping: .source
+        filterGrouping: .source,
+        unit: .images
     )
 }
 

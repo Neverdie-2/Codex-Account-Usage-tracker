@@ -37,6 +37,7 @@ struct UsageHistoryChartView: View {
         self.isCollapsed = isCollapsed
         self.onToggleCollapse = onToggleCollapse
         _grouping = State(initialValue: configuration.groupings.first ?? .model)
+        _metric = State(initialValue: configuration.defaultMetric)
         _result = State(initialValue: .empty(endDate: endDate))
     }
 

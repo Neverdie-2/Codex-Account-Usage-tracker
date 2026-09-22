@@ -16,34 +16,34 @@ final class AccountTrackerViewModel: ObservableObject {
     @Published private(set) var claudeCodeUsage = AzureUsageDashboard.empty
     @Published private(set) var lmStudioUsage = AzureUsageDashboard.empty
     @Published private(set) var claudeAzureUsage = AzureUsageDashboard.empty
-    @Published private(set) var openWebUIUsage = AzureUsageDashboard.empty
+    @Published private(set) var qwenImageUsage = AzureUsageDashboard.empty
     @Published private(set) var openAIAPIBilling = OpenAIAPIBillingDashboard.empty
     @Published private(set) var isAzureRefreshing = false
     @Published private(set) var isOpenAIRefreshing = false
     @Published private(set) var isClaudeCodeRefreshing = false
     @Published private(set) var isLMStudioRefreshing = false
     @Published private(set) var isClaudeAzureRefreshing = false
-    @Published private(set) var isOpenWebUIRefreshing = false
+    @Published private(set) var isQwenImageRefreshing = false
     @Published private(set) var isOpenAIAPIBillingRefreshing = false
     @Published private(set) var azureLastScannedAt: Date?
     @Published private(set) var openAILastScannedAt: Date?
     @Published private(set) var claudeCodeLastScannedAt: Date?
     @Published private(set) var lmStudioLastScannedAt: Date?
     @Published private(set) var claudeAzureLastScannedAt: Date?
-    @Published private(set) var openWebUILastScannedAt: Date?
+    @Published private(set) var qwenImageLastScannedAt: Date?
     @Published private(set) var openAIAPIBillingLastScannedAt: Date?
     @Published private(set) var azureUsageHistoryRecords: [AzureUsageRecord] = []
     @Published private(set) var openAIUsageHistoryRecords: [AzureUsageRecord] = []
     @Published private(set) var claudeCodeUsageHistoryRecords: [AzureUsageRecord] = []
     @Published private(set) var claudeAzureUsageHistoryRecords: [AzureUsageRecord] = []
     @Published private(set) var lmStudioUsageHistoryRecords: [AzureUsageRecord] = []
-    @Published private(set) var openWebUIUsageHistoryRecords: [AzureUsageRecord] = []
+    @Published private(set) var qwenImageUsageHistoryRecords: [AzureUsageRecord] = []
     @Published private(set) var azureUsageHistoryRevision = 0
     @Published private(set) var openAIUsageHistoryRevision = 0
     @Published private(set) var claudeCodeUsageHistoryRevision = 0
     @Published private(set) var claudeAzureUsageHistoryRevision = 0
     @Published private(set) var lmStudioUsageHistoryRevision = 0
-    @Published private(set) var openWebUIUsageHistoryRevision = 0
+    @Published private(set) var qwenImageUsageHistoryRevision = 0
 
     /// Which collapsible UI sections are currently collapsed. Persisted to
     /// AppPreferences so the state survives relaunches.
@@ -59,23 +59,23 @@ final class AccountTrackerViewModel: ObservableObject {
         static let claudeCodeUsage = "claudeCodeUsage"
         static let claudeAzureUsage = "claudeAzureUsage"
         static let lmStudioUsage = "lmStudioUsage"
-        static let openWebUIUsage = "openWebUIUsage"
+        static let qwenImageUsage = "qwenImageUsage"
         static let azureUsageHistory = "azureUsageHistory"
         static let openAIUsageHistory = "openAIUsageHistory"
         static let claudeCodeUsageHistory = "claudeCodeUsageHistory"
         static let claudeAzureUsageHistory = "claudeAzureUsageHistory"
         static let lmStudioUsageHistory = "lmStudioUsageHistory"
-        static let openWebUIUsageHistory = "openWebUIUsageHistory"
+        static let qwenImageUsageHistory = "qwenImageUsageHistory"
         static let history: [String] = [
             azureUsageHistory,
             openAIUsageHistory,
             claudeCodeUsageHistory,
             claudeAzureUsageHistory,
             lmStudioUsageHistory,
-            openWebUIUsageHistory
+            qwenImageUsageHistory
         ]
         static let all: [String] = [
-            accounts, azureUsage, openAIUsage, claudeCodeUsage, claudeAzureUsage, lmStudioUsage, openWebUIUsage,
+            accounts, azureUsage, openAIUsage, claudeCodeUsage, claudeAzureUsage, lmStudioUsage, qwenImageUsage,
         ]
     }
 
@@ -168,11 +168,11 @@ final class AccountTrackerViewModel: ObservableObject {
     @Published var claudeAzureUsageScanMode: CodexUsageScanMode = .recent24Hours {
         didSet { rebuildClaudeAzureUsageDashboard() }
     }
-    @Published var openWebUIUsageScanMode: CodexUsageScanMode = .recent24Hours {
-        didSet { rebuildOpenWebUIUsageDashboard() }
+    @Published var qwenImageUsageScanMode: CodexUsageScanMode = .recent24Hours {
+        didSet { rebuildQwenImageUsageDashboard() }
     }
-    @Published var openWebUICustomStartDate: Date = Calendar.current.date(byAdding: .day, value: -7, to: Date()) ?? Date() {
-        didSet { if openWebUIUsageScanMode == .sinceDate { rebuildOpenWebUIUsageDashboard() } }
+    @Published var qwenImageCustomStartDate: Date = Calendar.current.date(byAdding: .day, value: -7, to: Date()) ?? Date() {
+        didSet { if qwenImageUsageScanMode == .sinceDate { rebuildQwenImageUsageDashboard() } }
     }
     @Published var claudeAzureCustomStartDate: Date = Calendar.current.date(byAdding: .day, value: -7, to: Date()) ?? Date() {
         didSet { if claudeAzureUsageScanMode == .sinceDate { rebuildClaudeAzureUsageDashboard() } }
@@ -222,10 +222,10 @@ final class AccountTrackerViewModel: ObservableObject {
     private let lmStudioConversationStore = LMStudioConversationStore()
     private let opencodeUsageStore = OpencodeUsageStore()
     private let claudeAzureUsageStore = ClaudeAzureUsageStore()
-    private let openWebUIUsageStore = OpenWebUIUsageStore()
+    private let qwenImageUsageStore = QwenImageUsageStore()
     private var lmStudioScanResult = AzureUsageScanResult(provider: .lmStudio)
     private var claudeAzureScanResult = AzureUsageScanResult(provider: .claudeAzure)
-    private var openWebUIScanResult = AzureUsageScanResult(provider: .openWebUI)
+    private var qwenImageScanResult = AzureUsageScanResult(provider: .qwenImage)
     private var openAIAPIBillingResult = OpenAIAPIBillingResult.empty
     private var refreshTask: Task<Void, Never>?
     private var displayClockTask: Task<Void, Never>?
@@ -320,13 +320,13 @@ final class AccountTrackerViewModel: ObservableObject {
         )
         lines.append("")
         appendUsageDashboard(
-            openWebUIUsage,
-            title: "Open WebUI Usage",
-            windowLabel: openWebUIUsageScanMode.label,
-            lastScannedAt: openWebUILastScannedAt,
-            sessionCounterLabel: CodexLogUsageProvider.openWebUI.sessionCounterLabel,
-            costLabel: CodexLogUsageProvider.openWebUI.costLabel,
-            costShortLabel: CodexLogUsageProvider.openWebUI.costShortLabel,
+            qwenImageUsage,
+            title: "Qwen Image Usage",
+            windowLabel: qwenImageUsageScanMode.label,
+            lastScannedAt: qwenImageLastScannedAt,
+            sessionCounterLabel: CodexLogUsageProvider.qwenImage.sessionCounterLabel,
+            costLabel: CodexLogUsageProvider.qwenImage.costLabel,
+            costShortLabel: CodexLogUsageProvider.qwenImage.costShortLabel,
             to: &lines
         )
         lines.append("")
@@ -396,7 +396,7 @@ final class AccountTrackerViewModel: ObservableObject {
         refreshLMStudioUsage()
         refreshClaudeAzureUsage()
         // One small SQLite file — always refresh on launch.
-        refreshOpenWebUIUsage()
+        refreshQwenImageUsage()
         await startLiveMonitoring()
     }
 
@@ -546,20 +546,20 @@ final class AccountTrackerViewModel: ObservableObject {
         }
     }
 
-    func refreshOpenWebUIUsage() {
-        guard !isOpenWebUIRefreshing else { return }
-        isOpenWebUIRefreshing = true
-        Task { [weak self, openWebUIUsageStore, usageCacheStore] in
+    func refreshQwenImageUsage() {
+        guard !isQwenImageRefreshing else { return }
+        isQwenImageRefreshing = true
+        Task { [weak self, qwenImageUsageStore, usageCacheStore] in
             // Full rescan each time: the database is one small file and record ids
             // are stable (chat id + message id), so the fresh result replaces the cache.
-            let scan = await Task.detached(priority: .utility) { openWebUIUsageStore.scan() }.value
+            let scan = await Task.detached(priority: .utility) { qwenImageUsageStore.scan() }.value
             guard let self else { return }
-            defer { isOpenWebUIRefreshing = false }
+            defer { isQwenImageRefreshing = false }
             let scannedAt = Date()
-            openWebUIScanResult = scan
-            openWebUILastScannedAt = scannedAt
-            usageCacheStore.save(openWebUIScanResult, scannedAt: scannedAt)
-            rebuildOpenWebUIUsageDashboard()
+            qwenImageScanResult = scan
+            qwenImageLastScannedAt = scannedAt
+            usageCacheStore.save(qwenImageScanResult, scannedAt: scannedAt)
+            rebuildQwenImageUsageDashboard()
         }
     }
 
@@ -695,10 +695,10 @@ final class AccountTrackerViewModel: ObservableObject {
             rebuildLMStudioUsageDashboard()
         }
 
-        if let openWebUICache = usageCacheStore.load(provider: .openWebUI) {
-            openWebUIScanResult = openWebUICache.result
-            openWebUILastScannedAt = openWebUICache.scannedAt
-            rebuildOpenWebUIUsageDashboard()
+        if let qwenImageCache = usageCacheStore.load(provider: .qwenImage) {
+            qwenImageScanResult = qwenImageCache.result
+            qwenImageLastScannedAt = qwenImageCache.scannedAt
+            rebuildQwenImageUsageDashboard()
         }
 
         if let apiBillingCache = openAIAPIBillingCacheStore.load() {
@@ -751,6 +751,9 @@ final class AccountTrackerViewModel: ObservableObject {
         lines.append("Uncached \(formatInteger(dashboard.totals.uncachedInputTokens))")
         lines.append("Output \(formatInteger(dashboard.totals.outputTokens))")
         lines.append("Total \(formatInteger(dashboard.totals.totalTokens))")
+        if dashboard.totals.imageCount > 0 {
+            lines.append("Images \(formatInteger(dashboard.totals.imageCount))")
+        }
         lines.append("\(costLabel) \(formatUSD(dashboard.totals.estimatedCostUSD))")
 
         lines.append("")
@@ -936,13 +939,13 @@ final class AccountTrackerViewModel: ObservableObject {
         )
     }
 
-    private func rebuildOpenWebUIUsageDashboard() {
-        openWebUIUsageHistoryRecords = openWebUIScanResult.records
-        openWebUIUsageHistoryRevision += 1
-        openWebUIUsage = AzureUsageScanner.dashboard(
-            from: openWebUIScanResult,
-            window: openWebUIUsageScanMode.usageWindow,
-            customStartDate: openWebUICustomStartDate,
+    private func rebuildQwenImageUsageDashboard() {
+        qwenImageUsageHistoryRecords = qwenImageScanResult.records
+        qwenImageUsageHistoryRevision += 1
+        qwenImageUsage = AzureUsageScanner.dashboard(
+            from: qwenImageScanResult,
+            window: qwenImageUsageScanMode.usageWindow,
+            customStartDate: qwenImageCustomStartDate,
             now: displayNow
         )
     }
