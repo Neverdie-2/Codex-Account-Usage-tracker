@@ -91,6 +91,7 @@ enum CodexLogUsageProvider: String, Equatable, Codable {
     case claudeCode = "claude-code"
     case lmStudio = "lm-studio"
     case claudeAzure = "claude-azure"
+    case openWebUI = "open-webui"
 
     var displayName: String {
         switch self {
@@ -99,6 +100,7 @@ enum CodexLogUsageProvider: String, Equatable, Codable {
         case .claudeCode: return "Claude Code"
         case .lmStudio: return "LM Studio"
         case .claudeAzure: return "Claude Azure"
+        case .openWebUI: return "Open WebUI"
         }
     }
 
@@ -109,6 +111,7 @@ enum CodexLogUsageProvider: String, Equatable, Codable {
         case .claudeCode: return "Claude Code sessions"
         case .lmStudio: return "LM Studio chats"
         case .claudeAzure: return "Claude Azure requests"
+        case .openWebUI: return "Open WebUI chats"
         }
     }
 
@@ -118,7 +121,7 @@ enum CodexLogUsageProvider: String, Equatable, Codable {
     var costLabel: String {
         switch self {
         case .azure, .openai, .claudeCode, .claudeAzure: return "Est. cost"
-        case .lmStudio: return "Est. saved"
+        case .lmStudio, .openWebUI: return "Est. saved"
         }
     }
 
@@ -126,7 +129,7 @@ enum CodexLogUsageProvider: String, Equatable, Codable {
     var costShortLabel: String {
         switch self {
         case .azure, .openai, .claudeCode, .claudeAzure: return "Est."
-        case .lmStudio: return "Saved"
+        case .lmStudio, .openWebUI: return "Saved"
         }
     }
 
@@ -136,7 +139,7 @@ enum CodexLogUsageProvider: String, Equatable, Codable {
             return "Azure endpoint/resource could not be reliably discovered from local logs or safe config metadata; grouped as unknown endpoint."
         case .openai:
             return "OpenAI Codex usage excludes Azure sessions; Azure usage remains in the separate Azure dashboard."
-        case .claudeCode, .lmStudio, .claudeAzure:
+        case .claudeCode, .lmStudio, .claudeAzure, .openWebUI:
             return ""
         }
     }
@@ -471,7 +474,7 @@ struct AzureModelPricing: Equatable, Codable {
             )
         }
 
-        if provider == .lmStudio {
+        if provider == .lmStudio || provider == .openWebUI {
             // These are community fine-tunes with no API pricing of their own.
             // Estimate savings against the OpenRouter list price of the base
             // model each is derived from. Models with no API equivalent are left
@@ -1195,6 +1198,7 @@ struct AzureUsageProjectGroup: Equatable, Identifiable, Codable {
         projectPath == AzureUsageRecord.unknownProject
             || projectPath == AzureUsageRecord.chatProject
             || projectPath == LMStudioConversationStore.chatProject
+            || projectPath == OpenWebUIUsageStore.chatProject
     }
 }
 

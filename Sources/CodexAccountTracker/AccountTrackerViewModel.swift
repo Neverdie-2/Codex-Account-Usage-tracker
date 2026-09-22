@@ -16,29 +16,34 @@ final class AccountTrackerViewModel: ObservableObject {
     @Published private(set) var claudeCodeUsage = AzureUsageDashboard.empty
     @Published private(set) var lmStudioUsage = AzureUsageDashboard.empty
     @Published private(set) var claudeAzureUsage = AzureUsageDashboard.empty
+    @Published private(set) var openWebUIUsage = AzureUsageDashboard.empty
     @Published private(set) var openAIAPIBilling = OpenAIAPIBillingDashboard.empty
     @Published private(set) var isAzureRefreshing = false
     @Published private(set) var isOpenAIRefreshing = false
     @Published private(set) var isClaudeCodeRefreshing = false
     @Published private(set) var isLMStudioRefreshing = false
     @Published private(set) var isClaudeAzureRefreshing = false
+    @Published private(set) var isOpenWebUIRefreshing = false
     @Published private(set) var isOpenAIAPIBillingRefreshing = false
     @Published private(set) var azureLastScannedAt: Date?
     @Published private(set) var openAILastScannedAt: Date?
     @Published private(set) var claudeCodeLastScannedAt: Date?
     @Published private(set) var lmStudioLastScannedAt: Date?
     @Published private(set) var claudeAzureLastScannedAt: Date?
+    @Published private(set) var openWebUILastScannedAt: Date?
     @Published private(set) var openAIAPIBillingLastScannedAt: Date?
     @Published private(set) var azureUsageHistoryRecords: [AzureUsageRecord] = []
     @Published private(set) var openAIUsageHistoryRecords: [AzureUsageRecord] = []
     @Published private(set) var claudeCodeUsageHistoryRecords: [AzureUsageRecord] = []
     @Published private(set) var claudeAzureUsageHistoryRecords: [AzureUsageRecord] = []
     @Published private(set) var lmStudioUsageHistoryRecords: [AzureUsageRecord] = []
+    @Published private(set) var openWebUIUsageHistoryRecords: [AzureUsageRecord] = []
     @Published private(set) var azureUsageHistoryRevision = 0
     @Published private(set) var openAIUsageHistoryRevision = 0
     @Published private(set) var claudeCodeUsageHistoryRevision = 0
     @Published private(set) var claudeAzureUsageHistoryRevision = 0
     @Published private(set) var lmStudioUsageHistoryRevision = 0
+    @Published private(set) var openWebUIUsageHistoryRevision = 0
 
     /// Which collapsible UI sections are currently collapsed. Persisted to
     /// AppPreferences so the state survives relaunches.
@@ -54,20 +59,23 @@ final class AccountTrackerViewModel: ObservableObject {
         static let claudeCodeUsage = "claudeCodeUsage"
         static let claudeAzureUsage = "claudeAzureUsage"
         static let lmStudioUsage = "lmStudioUsage"
+        static let openWebUIUsage = "openWebUIUsage"
         static let azureUsageHistory = "azureUsageHistory"
         static let openAIUsageHistory = "openAIUsageHistory"
         static let claudeCodeUsageHistory = "claudeCodeUsageHistory"
         static let claudeAzureUsageHistory = "claudeAzureUsageHistory"
         static let lmStudioUsageHistory = "lmStudioUsageHistory"
+        static let openWebUIUsageHistory = "openWebUIUsageHistory"
         static let history: [String] = [
             azureUsageHistory,
             openAIUsageHistory,
             claudeCodeUsageHistory,
             claudeAzureUsageHistory,
-            lmStudioUsageHistory
+            lmStudioUsageHistory,
+            openWebUIUsageHistory
         ]
         static let all: [String] = [
-            accounts, azureUsage, openAIUsage, claudeCodeUsage, claudeAzureUsage, lmStudioUsage,
+            accounts, azureUsage, openAIUsage, claudeCodeUsage, claudeAzureUsage, lmStudioUsage, openWebUIUsage,
         ]
     }
 
@@ -160,6 +168,12 @@ final class AccountTrackerViewModel: ObservableObject {
     @Published var claudeAzureUsageScanMode: CodexUsageScanMode = .recent24Hours {
         didSet { rebuildClaudeAzureUsageDashboard() }
     }
+    @Published var openWebUIUsageScanMode: CodexUsageScanMode = .recent24Hours {
+        didSet { rebuildOpenWebUIUsageDashboard() }
+    }
+    @Published var openWebUICustomStartDate: Date = Calendar.current.date(byAdding: .day, value: -7, to: Date()) ?? Date() {
+        didSet { if openWebUIUsageScanMode == .sinceDate { rebuildOpenWebUIUsageDashboard() } }
+    }
     @Published var claudeAzureCustomStartDate: Date = Calendar.current.date(byAdding: .day, value: -7, to: Date()) ?? Date() {
         didSet { if claudeAzureUsageScanMode == .sinceDate { rebuildClaudeAzureUsageDashboard() } }
     }
@@ -208,8 +222,10 @@ final class AccountTrackerViewModel: ObservableObject {
     private let lmStudioConversationStore = LMStudioConversationStore()
     private let opencodeUsageStore = OpencodeUsageStore()
     private let claudeAzureUsageStore = ClaudeAzureUsageStore()
+    private let openWebUIUsageStore = OpenWebUIUsageStore()
     private var lmStudioScanResult = AzureUsageScanResult(provider: .lmStudio)
     private var claudeAzureScanResult = AzureUsageScanResult(provider: .claudeAzure)
+    private var openWebUIScanResult = AzureUsageScanResult(provider: .openWebUI)
     private var openAIAPIBillingResult = OpenAIAPIBillingResult.empty
     private var refreshTask: Task<Void, Never>?
     private var displayClockTask: Task<Void, Never>?
@@ -304,6 +320,17 @@ final class AccountTrackerViewModel: ObservableObject {
         )
         lines.append("")
         appendUsageDashboard(
+            openWebUIUsage,
+            title: "Open WebUI Usage",
+            windowLabel: openWebUIUsageScanMode.label,
+            lastScannedAt: openWebUILastScannedAt,
+            sessionCounterLabel: CodexLogUsageProvider.openWebUI.sessionCounterLabel,
+            costLabel: CodexLogUsageProvider.openWebUI.costLabel,
+            costShortLabel: CodexLogUsageProvider.openWebUI.costShortLabel,
+            to: &lines
+        )
+        lines.append("")
+        appendUsageDashboard(
             claudeAzureUsage,
             title: "Claude Azure Usage",
             windowLabel: claudeAzureUsageScanMode.label,
@@ -368,6 +395,8 @@ final class AccountTrackerViewModel: ObservableObject {
         // LM Studio rescans are cheap (a handful of JSON files) — always refresh on launch.
         refreshLMStudioUsage()
         refreshClaudeAzureUsage()
+        // One small SQLite file — always refresh on launch.
+        refreshOpenWebUIUsage()
         await startLiveMonitoring()
     }
 
@@ -517,6 +546,23 @@ final class AccountTrackerViewModel: ObservableObject {
         }
     }
 
+    func refreshOpenWebUIUsage() {
+        guard !isOpenWebUIRefreshing else { return }
+        isOpenWebUIRefreshing = true
+        Task { [weak self, openWebUIUsageStore, usageCacheStore] in
+            // Full rescan each time: the database is one small file and record ids
+            // are stable (chat id + message id), so the fresh result replaces the cache.
+            let scan = await Task.detached(priority: .utility) { openWebUIUsageStore.scan() }.value
+            guard let self else { return }
+            defer { isOpenWebUIRefreshing = false }
+            let scannedAt = Date()
+            openWebUIScanResult = scan
+            openWebUILastScannedAt = scannedAt
+            usageCacheStore.save(openWebUIScanResult, scannedAt: scannedAt)
+            rebuildOpenWebUIUsageDashboard()
+        }
+    }
+
     func refreshOpenAIAPIBilling() {
         guard !isOpenAIAPIBillingRefreshing else { return }
         isOpenAIAPIBillingRefreshing = true
@@ -647,6 +693,12 @@ final class AccountTrackerViewModel: ObservableObject {
             lmStudioScanResult = lmStudioCache.result
             lmStudioLastScannedAt = lmStudioCache.scannedAt
             rebuildLMStudioUsageDashboard()
+        }
+
+        if let openWebUICache = usageCacheStore.load(provider: .openWebUI) {
+            openWebUIScanResult = openWebUICache.result
+            openWebUILastScannedAt = openWebUICache.scannedAt
+            rebuildOpenWebUIUsageDashboard()
         }
 
         if let apiBillingCache = openAIAPIBillingCacheStore.load() {
@@ -880,6 +932,17 @@ final class AccountTrackerViewModel: ObservableObject {
             from: lmStudioScanResult,
             window: lmStudioUsageScanMode.usageWindow,
             customStartDate: lmStudioCustomStartDate,
+            now: displayNow
+        )
+    }
+
+    private func rebuildOpenWebUIUsageDashboard() {
+        openWebUIUsageHistoryRecords = openWebUIScanResult.records
+        openWebUIUsageHistoryRevision += 1
+        openWebUIUsage = AzureUsageScanner.dashboard(
+            from: openWebUIScanResult,
+            window: openWebUIUsageScanMode.usageWindow,
+            customStartDate: openWebUICustomStartDate,
             now: displayNow
         )
     }

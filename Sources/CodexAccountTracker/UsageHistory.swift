@@ -284,6 +284,14 @@ struct UsageHistoryPanelConfiguration: Equatable {
         groupings: [.model, .project, .source],
         filterGrouping: .source
     )
+
+    static let openWebUI = UsageHistoryPanelConfiguration(
+        provider: .openWebUI,
+        collapseID: AccountTrackerViewModel.CollapsibleSection.openWebUIUsageHistory,
+        costLabel: "Estimated savings",
+        groupings: [.model, .project, .source],
+        filterGrouping: .source
+    )
 }
 
 struct UsageHistoryPoint: Equatable, Identifiable {

@@ -18,6 +18,7 @@ struct ContentView: View {
                         ClaudeCodeUsageSectionView()
                         ClaudeAzureUsageSectionView()
                         LMStudioUsageSectionView()
+                        OpenWebUIUsageSectionView()
                     }
                     .padding(20)
                 }
@@ -64,6 +65,7 @@ struct ContentView: View {
                         ClaudeCodeUsageSectionView()
                         ClaudeAzureUsageSectionView()
                         LMStudioUsageSectionView()
+                        OpenWebUIUsageSectionView()
                     }
                     .padding(20)
                 }
@@ -750,6 +752,46 @@ private struct LMStudioUsageSectionView: View {
             onToggleCollapse: {
                 withAnimation(.easeInOut(duration: 0.18)) {
                     viewModel.toggleSectionCollapsed(AccountTrackerViewModel.CollapsibleSection.lmStudioUsage)
+                }
+            }
+        )
+    }
+}
+
+private struct OpenWebUIUsageSectionView: View {
+    @EnvironmentObject private var viewModel: AccountTrackerViewModel
+
+    var body: some View {
+        CodexLogUsageSectionView(
+            title: "Open WebUI Usage",
+            subtitle: "Local Open WebUI chat assistant (Qwen Image Editor) — free to run; savings vs the base model's API rate",
+            dashboard: viewModel.openWebUIUsage,
+            historyRecords: viewModel.openWebUIUsageHistoryRecords,
+            historyRecordsRevision: viewModel.openWebUIUsageHistoryRevision,
+            historyStartDate: viewModel.openWebUIUsageScanMode.startDate(now: viewModel.displayNow, customStartDate: viewModel.openWebUICustomStartDate),
+            historyEndDate: viewModel.displayNow,
+            historyConfiguration: .openWebUI,
+            historyIsCollapsed: viewModel.isSectionCollapsed(AccountTrackerViewModel.CollapsibleSection.openWebUIUsageHistory),
+            onToggleHistoryCollapse: {
+                viewModel.toggleSectionCollapsed(AccountTrackerViewModel.CollapsibleSection.openWebUIUsageHistory)
+            },
+            isRefreshing: viewModel.isOpenWebUIRefreshing,
+            lastScannedAt: viewModel.openWebUILastScannedAt,
+            scanMode: $viewModel.openWebUIUsageScanMode,
+            customStartDate: $viewModel.openWebUICustomStartDate,
+            sessionCounterLabel: CodexLogUsageProvider.openWebUI.sessionCounterLabel,
+            costLabel: CodexLogUsageProvider.openWebUI.costLabel,
+            costColumnTitle: "\(CodexLogUsageProvider.openWebUI.costShortLabel) $",
+            endpointTableTitle: "By model",
+            emptyText: "No Open WebUI turns counted yet. Chat in the Qwen Image Editor and click Refresh.",
+            endpointLabel: { group in
+                "\(group.endpoint) • \(group.deployment)"
+            },
+            refresh: viewModel.refreshOpenWebUIUsage,
+            isCollapsed: viewModel.isSectionCollapsed(AccountTrackerViewModel.CollapsibleSection.openWebUIUsage),
+            onToggleCollapse: {
+                withAnimation(.easeInOut(duration: 0.18)) {
+                    viewModel.toggleSectionCollapsed(AccountTrackerViewModel.CollapsibleSection.openWebUIUsage)
                 }
             }
         )

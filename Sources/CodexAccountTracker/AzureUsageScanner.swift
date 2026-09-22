@@ -37,7 +37,7 @@ final class AzureUsageScanner {
         // LM Studio usage comes from LMStudioConversationStore; this scanner has no
         // LM Studio path. Fail loudly in debug if one is ever wired up by mistake —
         // otherwise it would silently return an empty, plausible-looking result.
-        assert(provider != .lmStudio && provider != .claudeAzure, "Use ClaudeAzureUsageStore for Claude Azure usage")
+        assert(provider != .lmStudio && provider != .claudeAzure && provider != .openWebUI, "Use ClaudeAzureUsageStore for Claude Azure usage")
         let metadata: AzureUsageDetectedMetadata
         switch provider {
         case .azure:
@@ -46,7 +46,7 @@ final class AzureUsageScanner {
             metadata = AzureUsageDetectedMetadata(endpoint: "OpenAI", resource: "Codex local logs", deployment: nil, warnings: [])
         case .claudeCode:
             metadata = AzureUsageDetectedMetadata(endpoint: "Anthropic", resource: "Claude Code transcripts", deployment: nil, warnings: [])
-        case .lmStudio, .claudeAzure:
+        case .lmStudio, .claudeAzure, .openWebUI:
             // LM Studio usage is produced by LMStudioConversationStore, not this scanner.
             metadata = AzureUsageDetectedMetadata(endpoint: "LM Studio", resource: "Local chats", deployment: nil, warnings: [])
         }
@@ -58,7 +58,7 @@ final class AzureUsageScanner {
             jsonlFileURLs()
         case .claudeCode:
             jsonlFileURLs(since: startDate)
-        case .lmStudio, .claudeAzure:
+        case .lmStudio, .claudeAzure, .openWebUI:
             [URL]()
         }
         result.summary.filesScanned = fileURLs.count
@@ -68,7 +68,7 @@ final class AzureUsageScanner {
             scanCodexLocalSessions(fileURLs: fileURLs, metadata: metadata, eventCutoff: startDate, result: &result, state: &state)
         case .claudeCode:
             scanClaudeCodeSessions(fileURLs: fileURLs, eventCutoff: startDate, result: &result, state: &state)
-        case .lmStudio, .claudeAzure:
+        case .lmStudio, .claudeAzure, .openWebUI:
             break
         }
 
@@ -1239,7 +1239,7 @@ final class AzureUsageScanner {
         case .claudeCode:
             endpoint = metadata.endpoint ?? "Anthropic"
             resource = metadata.resource ?? "Claude Code transcripts"
-        case .lmStudio, .claudeAzure:
+        case .lmStudio, .claudeAzure, .openWebUI:
             // Unreachable: the scanner never emits LM Studio records (see scan()).
             endpoint = metadata.endpoint ?? "LM Studio"
             resource = metadata.resource ?? "Local chats"
