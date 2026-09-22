@@ -1,1 +1,1 @@
-App icon: from the operator's own CodexQuotaMenu project (github.com/Neverdie-2/CodexQuotaMenu, Assets/AppIcon.png), squircle-masked to 1024px. Previous tracker icon kept in Assets/previous-icon-20260922/.
+App icon: monochrome "<|||>" icon supplied by the operator on 2026-09-22 (cropped to its rounded square, corners made transparent, 1024 px). Earlier icons kept in Assets/previous-icon-20260922/.
