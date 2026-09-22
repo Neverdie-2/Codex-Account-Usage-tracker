@@ -60,22 +60,26 @@ struct UsageHistoryChartView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
-            Button {
-                withAnimation(.easeInOut(duration: 0.18)) {
-                    onToggleCollapse()
+            // Only the chevron and the title toggle the chart; the rest of the row is inert
+            // so a stray click across the panel does not collapse it.
+            HStack(spacing: 0) {
+                Button {
+                    withAnimation(.easeInOut(duration: 0.18)) {
+                        onToggleCollapse()
+                    }
+                } label: {
+                    HStack(spacing: 8) {
+                        UsageHistoryChevron(isCollapsed: isCollapsed)
+                        Text("Historical Usage")
+                            .font(.headline)
+                    }
+                    .contentShape(Rectangle())
                 }
-            } label: {
-                HStack(spacing: 8) {
-                    UsageHistoryChevron(isCollapsed: isCollapsed)
-                    Text("Historical Usage")
-                        .font(.headline)
-                    Spacer()
-                }
-                .contentShape(Rectangle())
+                .buttonStyle(.plain)
+                .accessibilityLabel("Historical Usage")
+                .accessibilityValue(isCollapsed ? "Collapsed" : "Expanded")
+                Spacer()
             }
-            .buttonStyle(.plain)
-            .accessibilityLabel("Historical Usage")
-            .accessibilityValue(isCollapsed ? "Collapsed" : "Expanded")
 
             if !isCollapsed {
                 controls
