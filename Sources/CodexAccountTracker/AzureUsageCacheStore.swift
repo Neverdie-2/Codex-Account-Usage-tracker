@@ -31,7 +31,7 @@ final class AzureUsageCacheStore {
             try FileManager.default.createDirectory(at: directoryURL, withIntermediateDirectories: true)
             let encoder = JSONEncoder()
             encoder.dateEncodingStrategy = .iso8601
-            encoder.outputFormatting = [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes]
+            encoder.outputFormatting = [.sortedKeys, .withoutEscapingSlashes]
             let entry = AzureUsageCacheEntry(scannedAt: scannedAt, result: result)
             let data = try encoder.encode(entry)
             try data.write(to: fileURL(for: result.provider), options: [.atomic])

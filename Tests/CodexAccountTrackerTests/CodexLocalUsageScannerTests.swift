@@ -108,10 +108,11 @@ final class CodexLocalUsageScannerTests: XCTestCase {
 
         let azure = scan(.azure)
         XCTAssertEqual(azure.records.map(\.sessionID), ["astra-session"])
-        // 1M uncached input at $10 + 100K output at $50/M.
+        // 1M input tokens is past the 272K long-context threshold, so the whole request bills
+        // at Astra's long rate: 1M uncached input at $20/M + 100K output at $75/M.
         let record = try XCTUnwrap(azure.records.first)
         let cost = AzureModelPricing.defaultPricing(for: record.model, provider: .azure).estimatedCost(for: record.usage)
-        XCTAssertEqual(cost, 15.00, accuracy: 0.0001)
+        XCTAssertEqual(cost, 27.50, accuracy: 0.0001)
 
         // The Azure session must not leak into the OpenAI Codex dashboard.
         XCTAssertTrue(scan(.openai).records.isEmpty)

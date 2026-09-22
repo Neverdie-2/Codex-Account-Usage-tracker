@@ -1000,6 +1000,10 @@ private struct CodexLogUsageSectionView: View {
                     AzureUsageCostPanel(title: costLabel, value: dashboard.totals.estimatedCostUSD)
                 }
 
+                if dashboard.costBreakdown.hasUplifts {
+                    AzureUsageCostBreakdownLine(breakdown: dashboard.costBreakdown)
+                }
+
                 UsageHistoryChartView(
                     records: historyRecords,
                     recordsRevision: historyRecordsRevision,
@@ -1112,6 +1116,35 @@ private struct AzureUsageCostPanel: View {
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(Color(nsColor: .textBackgroundColor))
         .clipShape(RoundedRectangle(cornerRadius: 8))
+    }
+}
+
+/// "Base $1,071 · Long-context +$220 (425 req) · Fast mode +$261 (540 req) · 299 req speed
+/// unknown (up to +$83)" — shown only when at least one uplift or unknown exists in the window.
+private struct AzureUsageCostBreakdownLine: View {
+    let breakdown: AzureUsageCostBreakdown
+
+    var body: some View {
+        Text(Self.text(for: breakdown))
+            .font(.caption)
+            .foregroundStyle(.secondary)
+            .monospacedDigit()
+            .textSelection(.enabled)
+            .padding(.horizontal, 4)
+    }
+
+    static func text(for b: AzureUsageCostBreakdown) -> String {
+        var parts = ["Base \(AzureUsageFormat.usd(b.baseUSD))"]
+        if b.longContextRequestCount > 0 {
+            parts.append("Long-context +\(AzureUsageFormat.usd(b.longContextExtraUSD)) (\(b.longContextRequestCount) req)")
+        }
+        if b.fastModeRequestCount > 0 {
+            parts.append("Fast mode +\(AzureUsageFormat.usd(b.fastModeExtraUSD)) (\(b.fastModeRequestCount) req)")
+        }
+        if b.unknownSpeedRequestCount > 0 {
+            parts.append("\(b.unknownSpeedRequestCount) req speed unknown (up to +\(AzureUsageFormat.usd(b.unknownSpeedExtraUSD)))")
+        }
+        return parts.joined(separator: " · ")
     }
 }
 

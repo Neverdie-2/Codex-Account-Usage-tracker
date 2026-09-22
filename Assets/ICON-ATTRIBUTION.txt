@@ -1,0 +1,1 @@
+App icon: from the operator's own CodexQuotaMenu project (github.com/Neverdie-2/CodexQuotaMenu, Assets/AppIcon.png), squircle-masked to 1024px. Previous tracker icon kept in Assets/previous-icon-20260922/.

@@ -283,6 +283,45 @@ struct AzureUsageTokenTotals: Equatable, Codable {
     init() {}
 }
 
+/// Speed setting a single request ran at. Codex on the ChatGPT plan can run a turn in
+/// "Fast" mode, which bills at a multiple of the Standard rate. `.unknown` means the log
+/// recorded no setting for that request (older logs), not that Standard was chosen.
+enum AzureUsageSpeed: String, Equatable, Hashable, Codable {
+    case standard
+    case fast
+    case unknown
+}
+
+/// Rates that replace the base rates once a single request's input exceeds
+/// `thresholdInputTokens`. The whole request bills at these rates; OpenAI does not split
+/// one request across the two tiers.
+struct AzureLongContextRates: Equatable, Codable {
+    var thresholdInputTokens: Int
+    var inputPerMillionUSD: Double
+    var cachedInputPerMillionUSD: Double
+    var cacheWritePerMillionUSD: Double?
+    var outputPerMillionUSD: Double
+
+    init(
+        thresholdInputTokens: Int,
+        inputPerMillionUSD: Double,
+        cachedInputPerMillionUSD: Double,
+        cacheWritePerMillionUSD: Double? = nil,
+        outputPerMillionUSD: Double
+    ) {
+        self.thresholdInputTokens = thresholdInputTokens
+        self.inputPerMillionUSD = inputPerMillionUSD
+        self.cachedInputPerMillionUSD = cachedInputPerMillionUSD
+        self.cacheWritePerMillionUSD = cacheWritePerMillionUSD
+        self.outputPerMillionUSD = outputPerMillionUSD
+    }
+}
+
+/// OpenAI's long-context tier starts above 272,000 input tokens: 272,000 still bills at
+/// the short rate, 272,001 bills the whole request at the long rate.
+/// Source: https://developers.openai.com/api/docs/pricing (read 2026-09-21).
+let azureLongContextThresholdInputTokens = 272_000
+
 struct AzureModelPricing: Equatable, Codable {
     var modelPattern: String
     var displayName: String
@@ -290,6 +329,12 @@ struct AzureModelPricing: Equatable, Codable {
     var cachedInputPerMillionUSD: Double
     var cacheWritePerMillionUSD: Double?
     var outputPerMillionUSD: Double
+    /// Rate for the part of a cache write that goes to the 1-hour cache. Anthropic charges
+    /// 2x base input for it; the 5-minute cache write keeps `cacheWritePerMillionUSD`.
+    var cacheWrite1hPerMillionUSD: Double?
+    var longContext: AzureLongContextRates?
+    /// Set only where a Fast-mode surcharge is known to apply (Codex on the ChatGPT plan).
+    var fastModeMultiplier: Double?
     var isKnown: Bool
 
     var effectiveCacheWritePerMillionUSD: Double {
@@ -297,11 +342,58 @@ struct AzureModelPricing: Equatable, Codable {
     }
 
     func estimatedCost(for usage: AzureTokenUsage) -> Double {
-        let uncachedCost = Double(usage.uncachedInputTokens) / 1_000_000 * inputPerMillionUSD
-        let cacheWriteCost = Double(usage.cacheCreationInputTokens) / 1_000_000 * effectiveCacheWritePerMillionUSD
-        let cachedCost = Double(usage.cachedInputTokens) / 1_000_000 * cachedInputPerMillionUSD
-        let outputCost = Double(usage.outputTokens) / 1_000_000 * outputPerMillionUSD
-        return uncachedCost + cacheWriteCost + cachedCost + outputCost
+        estimatedCost(for: usage, forcingFastMode: usage.speed == .fast)
+    }
+
+    /// The same request priced as if it had run in Fast mode. Used to show how much the
+    /// requests with no recorded speed setting could be under-counted.
+    func estimatedCostIfFast(for usage: AzureTokenUsage) -> Double {
+        estimatedCost(for: usage, forcingFastMode: true)
+    }
+
+    /// What the request would cost at plain short-context Standard rates, ignoring the
+    /// long-context tier and the Fast-mode multiplier. The dashboard's cost breakdown uses it
+    /// as the base against which those two uplifts are shown.
+    func estimatedCostAtStandardShortContext(for usage: AzureTokenUsage) -> Double {
+        estimatedCost(for: usage, forcingFastMode: false, applyingLongContext: false)
+    }
+
+    /// Cost with the long-context tier applied (when it applies) but never the Fast multiplier.
+    func estimatedCostBeforeFastMode(for usage: AzureTokenUsage) -> Double {
+        estimatedCost(for: usage, forcingFastMode: false)
+    }
+
+    private func estimatedCost(for usage: AzureTokenUsage, forcingFastMode: Bool, applyingLongContext: Bool = true) -> Double {
+        let inputRate: Double
+        let cachedRate: Double
+        let cacheWriteRate: Double
+        let outputRate: Double
+        if applyingLongContext, let longContext, usage.inputTokens > longContext.thresholdInputTokens {
+            inputRate = longContext.inputPerMillionUSD
+            cachedRate = longContext.cachedInputPerMillionUSD
+            cacheWriteRate = longContext.cacheWritePerMillionUSD ?? longContext.inputPerMillionUSD
+            outputRate = longContext.outputPerMillionUSD
+        } else {
+            inputRate = inputPerMillionUSD
+            cachedRate = cachedInputPerMillionUSD
+            cacheWriteRate = effectiveCacheWritePerMillionUSD
+            outputRate = outputPerMillionUSD
+        }
+
+        let oneHourWriteTokens = min(max(usage.cacheCreation1hInputTokens, 0), usage.cacheCreationInputTokens)
+        let fiveMinuteWriteTokens = usage.cacheCreationInputTokens - oneHourWriteTokens
+        let oneHourWriteRate = cacheWrite1hPerMillionUSD ?? cacheWriteRate
+
+        var cost = Double(usage.uncachedInputTokens) / 1_000_000 * inputRate
+        cost += Double(fiveMinuteWriteTokens) / 1_000_000 * cacheWriteRate
+        cost += Double(oneHourWriteTokens) / 1_000_000 * oneHourWriteRate
+        cost += Double(usage.cachedInputTokens) / 1_000_000 * cachedRate
+        cost += Double(usage.outputTokens) / 1_000_000 * outputRate
+
+        if forcingFastMode, let fastModeMultiplier {
+            cost *= fastModeMultiplier
+        }
+        return cost
     }
 
     var rateSummary: String {
@@ -322,6 +414,9 @@ struct AzureModelPricing: Equatable, Codable {
         cachedInputPerMillionUSD: Double,
         cacheWritePerMillionUSD: Double? = nil,
         outputPerMillionUSD: Double,
+        cacheWrite1hPerMillionUSD: Double? = nil,
+        longContext: AzureLongContextRates? = nil,
+        fastModeMultiplier: Double? = nil,
         isKnown: Bool
     ) {
         self.modelPattern = modelPattern
@@ -330,9 +425,14 @@ struct AzureModelPricing: Equatable, Codable {
         self.cachedInputPerMillionUSD = cachedInputPerMillionUSD
         self.cacheWritePerMillionUSD = cacheWritePerMillionUSD
         self.outputPerMillionUSD = outputPerMillionUSD
+        self.cacheWrite1hPerMillionUSD = cacheWrite1hPerMillionUSD
+        self.longContext = longContext
+        self.fastModeMultiplier = fastModeMultiplier
         self.isKnown = isKnown
     }
 
+    /// Decoded key by key: cached dashboards written before a field existed must keep
+    /// decoding, otherwise a whole cached scan is dropped on upgrade.
     init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         modelPattern = try container.decode(String.self, forKey: .modelPattern)
@@ -341,6 +441,9 @@ struct AzureModelPricing: Equatable, Codable {
         cachedInputPerMillionUSD = try container.decode(Double.self, forKey: .cachedInputPerMillionUSD)
         cacheWritePerMillionUSD = try container.decodeIfPresent(Double.self, forKey: .cacheWritePerMillionUSD)
         outputPerMillionUSD = try container.decode(Double.self, forKey: .outputPerMillionUSD)
+        cacheWrite1hPerMillionUSD = try container.decodeIfPresent(Double.self, forKey: .cacheWrite1hPerMillionUSD)
+        longContext = try container.decodeIfPresent(AzureLongContextRates.self, forKey: .longContext)
+        fastModeMultiplier = try container.decodeIfPresent(Double.self, forKey: .fastModeMultiplier)
         isKnown = try container.decode(Bool.self, forKey: .isKnown)
     }
 
@@ -417,23 +520,35 @@ struct AzureModelPricing: Equatable, Codable {
             )
         }
 
+        // Anthropic rates below are from https://platform.claude.com/docs/en/about-claude/pricing
+        // (read 2026-09-21). Two rules from that page drive the shape of these entries:
+        //   "1-hour cache write | 2x base input price" — hence cacheWrite1hPerMillionUSD on every
+        //   preset, while cacheWritePerMillionUSD stays the 5-minute (1.25x) rate.
+        //   "Claude 4.6 and later models … include the full 1M token context window at standard
+        //   pricing" — so no Claude preset carries a long-context tier.
         if provider == .claudeCode || provider == .claudeAzure || normalized.contains("claude-") {
-            if normalized.contains("fable") {
+            if normalized.contains("fable") || normalized.contains("mythos") {
+                // Fable 5.1 and Mythos 5.1 cut the cache-hit rate to 0.025x base input
+                // ($0.25/M); the 5.0 generation still reads at 0.1x ($1.00/M).
+                let isCheapCacheRead = normalized.contains("fable-5-1") || normalized.contains("mythos-5-1")
                 return AzureModelPricing(
-                    modelPattern: "claude-fable-5",
-                    displayName: "Claude Fable 5",
+                    modelPattern: isCheapCacheRead ? "claude-fable-5-1" : "claude-fable-5",
+                    displayName: isCheapCacheRead ? "Claude Fable 5.1 / Mythos 5.1" : "Claude Fable 5 / Mythos 5",
                     inputPerMillionUSD: 10.00,
-                    cachedInputPerMillionUSD: 1.00,
+                    cachedInputPerMillionUSD: isCheapCacheRead ? 0.25 : 1.00,
                     cacheWritePerMillionUSD: 12.50,
                     outputPerMillionUSD: 50.00,
+                    cacheWrite1hPerMillionUSD: 20.00,
                     isKnown: true
                 )
             }
             if normalized.contains("opus") {
                 // Opus 3, Opus 4.0, and Opus 4.1 all bill at the legacy $15/$75 tier.
-                // Opus 4.5 through 4.8 dropped to $5/$25.
+                // Opus 4.5 through 4.8 and Opus 5 dropped to $5/$25. A dated Opus 4.0
+                // snapshot id (`claude-opus-4-20250514`) is legacy too, which a plain
+                // equality check against "claude-opus-4" misses.
                 let isLegacyOpus = normalized.contains("opus-4-1")
-                    || normalized == "claude-opus-4"
+                    || isDatedOrBareOpus4(normalized)
                     || normalized.contains("opus-3")
                     || normalized.contains("3-opus")
                     || normalized.contains("4-opus")
@@ -445,6 +560,7 @@ struct AzureModelPricing: Equatable, Codable {
                         cachedInputPerMillionUSD: 1.50,
                         cacheWritePerMillionUSD: 18.75,
                         outputPerMillionUSD: 75.00,
+                        cacheWrite1hPerMillionUSD: 30.00,
                         isKnown: true
                     )
                 }
@@ -455,6 +571,7 @@ struct AzureModelPricing: Equatable, Codable {
                     cachedInputPerMillionUSD: 0.50,
                     cacheWritePerMillionUSD: 6.25,
                     outputPerMillionUSD: 25.00,
+                    cacheWrite1hPerMillionUSD: 10.00,
                     isKnown: true
                 )
             }
@@ -468,6 +585,7 @@ struct AzureModelPricing: Equatable, Codable {
                         cachedInputPerMillionUSD: 0.20,
                         cacheWritePerMillionUSD: 2.50,
                         outputPerMillionUSD: 10.00,
+                        cacheWrite1hPerMillionUSD: 4.00,
                         isKnown: true
                     )
                 }
@@ -478,10 +596,24 @@ struct AzureModelPricing: Equatable, Codable {
                     cachedInputPerMillionUSD: 0.30,
                     cacheWritePerMillionUSD: 3.75,
                     outputPerMillionUSD: 15.00,
+                    cacheWrite1hPerMillionUSD: 6.00,
                     isKnown: true
                 )
             }
             if normalized.contains("haiku") {
+                // Checked before the Haiku 3 branch: "haiku-3-5" also contains "haiku-3".
+                if normalized.contains("haiku-3-5") || normalized.contains("3-5-haiku") {
+                    return AzureModelPricing(
+                        modelPattern: "claude-3-5-haiku",
+                        displayName: "Claude Haiku 3.5",
+                        inputPerMillionUSD: 0.80,
+                        cachedInputPerMillionUSD: 0.08,
+                        cacheWritePerMillionUSD: 1.00,
+                        outputPerMillionUSD: 4.00,
+                        cacheWrite1hPerMillionUSD: 1.60,
+                        isKnown: true
+                    )
+                }
                 if normalized.contains("haiku-3") || normalized.contains("3-haiku") {
                     return AzureModelPricing(
                         modelPattern: "claude-3-haiku",
@@ -490,6 +622,7 @@ struct AzureModelPricing: Equatable, Codable {
                         cachedInputPerMillionUSD: 0.03,
                         cacheWritePerMillionUSD: 0.30,
                         outputPerMillionUSD: 1.25,
+                        cacheWrite1hPerMillionUSD: 0.50,
                         isKnown: true
                     )
                 }
@@ -500,6 +633,7 @@ struct AzureModelPricing: Equatable, Codable {
                     cachedInputPerMillionUSD: 0.10,
                     cacheWritePerMillionUSD: 1.25,
                     outputPerMillionUSD: 5.00,
+                    cacheWrite1hPerMillionUSD: 2.00,
                     isKnown: true
                 )
             }
@@ -516,12 +650,18 @@ struct AzureModelPricing: Equatable, Codable {
             }
         }
 
+        // Fast mode is a ChatGPT-plan setting on the Codex path; whether Azure Foundry honours
+        // or bills `service_tier: priority` is unverified, so no Azure entry carries a
+        // multiplier. Source for the rate: learn.chatgpt.com/docs/agent-configuration/speed —
+        // "Fast mode consumes credits at 2.5x the Standard rate" (read 2026-09-21).
+        let fastMultiplier: Double? = provider == .openai ? 2.5 : nil
+
         // GPT-6 Astra, short-context Standard rates. OpenAI's list price and Azure Foundry's
         // Global Standard price are identical, so one entry serves both the Codex and Azure
         // dashboards. (Azure US Data Zone deployments bill 10% higher: $11 / $1.10 / $13.75 / $55.)
-        // The long-context tier ($20 in / $75 out) only applies above 272K input tokens, which
-        // Codex's 271K context window never reaches. Codex logs carry no cache-write count, so
-        // uncached input is priced at the $10 input rate, as for GPT-5.6.
+        // Requests above 272K input tokens do happen on this path (476 of them in September),
+        // so the long-context tier is priced rather than assumed unreachable.
+        // Source: https://developers.openai.com/api/docs/pricing (read 2026-09-21).
         if normalized.contains("gpt-6-astra") || normalized.contains("gpt6-astra") || normalized == "gpt-6" {
             return AzureModelPricing(
                 modelPattern: "gpt-6-astra",
@@ -530,6 +670,14 @@ struct AzureModelPricing: Equatable, Codable {
                 cachedInputPerMillionUSD: 1.00,
                 cacheWritePerMillionUSD: 12.50,
                 outputPerMillionUSD: 50.00,
+                longContext: AzureLongContextRates(
+                    thresholdInputTokens: azureLongContextThresholdInputTokens,
+                    inputPerMillionUSD: 20.00,
+                    cachedInputPerMillionUSD: 2.00,
+                    cacheWritePerMillionUSD: 25.00,
+                    outputPerMillionUSD: 75.00
+                ),
+                fastModeMultiplier: fastMultiplier,
                 isKnown: true
             )
         }
@@ -538,10 +686,18 @@ struct AzureModelPricing: Equatable, Codable {
             return AzureModelPricing(
                 modelPattern: "gpt-5.6-terra",
                 displayName: "GPT-5.6 Terra",
-                inputPerMillionUSD: 2.50,
-                cachedInputPerMillionUSD: 0.25,
-                cacheWritePerMillionUSD: 3.125,
-                outputPerMillionUSD: 15.00,
+                inputPerMillionUSD: 2.00,
+                cachedInputPerMillionUSD: 0.20,
+                cacheWritePerMillionUSD: 2.50,
+                outputPerMillionUSD: 12.00,
+                longContext: AzureLongContextRates(
+                    thresholdInputTokens: azureLongContextThresholdInputTokens,
+                    inputPerMillionUSD: 4.00,
+                    cachedInputPerMillionUSD: 0.40,
+                    cacheWritePerMillionUSD: 5.00,
+                    outputPerMillionUSD: 18.00
+                ),
+                fastModeMultiplier: fastMultiplier,
                 isKnown: true
             )
         }
@@ -550,23 +706,43 @@ struct AzureModelPricing: Equatable, Codable {
             return AzureModelPricing(
                 modelPattern: "gpt-5.6-luna",
                 displayName: "GPT-5.6 Luna",
-                inputPerMillionUSD: 1.00,
-                cachedInputPerMillionUSD: 0.10,
-                cacheWritePerMillionUSD: 1.25,
-                outputPerMillionUSD: 6.00,
+                inputPerMillionUSD: 0.20,
+                cachedInputPerMillionUSD: 0.02,
+                cacheWritePerMillionUSD: 0.25,
+                outputPerMillionUSD: 1.20,
+                longContext: AzureLongContextRates(
+                    thresholdInputTokens: azureLongContextThresholdInputTokens,
+                    inputPerMillionUSD: 0.40,
+                    cachedInputPerMillionUSD: 0.04,
+                    cacheWritePerMillionUSD: 0.50,
+                    outputPerMillionUSD: 1.80
+                ),
+                fastModeMultiplier: fastMultiplier,
                 isKnown: true
             )
         }
 
         // The bare `gpt-5.6` alias routes to Sol, the flagship tier, so it shares Sol's rates.
+        // Sol is on promotional pricing and the page lists no regular price:
+        // "GPT-5.6 Sol's promotional pricing is available at least through November 21, 2026."
+        // Nothing is invented for the period after that date — the dashboard warns instead
+        // (see AzureUsageScanner.dashboard).
         if normalized.contains("gpt-5-6") || normalized == "gpt-56" {
             return AzureModelPricing(
                 modelPattern: "gpt-5.6-sol",
                 displayName: "GPT-5.6 Sol",
-                inputPerMillionUSD: 5.00,
-                cachedInputPerMillionUSD: 0.50,
-                cacheWritePerMillionUSD: 6.25,
-                outputPerMillionUSD: 30.00,
+                inputPerMillionUSD: 4.00,
+                cachedInputPerMillionUSD: 0.40,
+                cacheWritePerMillionUSD: 5.00,
+                outputPerMillionUSD: 20.00,
+                longContext: AzureLongContextRates(
+                    thresholdInputTokens: azureLongContextThresholdInputTokens,
+                    inputPerMillionUSD: 8.00,
+                    cachedInputPerMillionUSD: 0.80,
+                    cacheWritePerMillionUSD: 10.00,
+                    outputPerMillionUSD: 30.00
+                ),
+                fastModeMultiplier: fastMultiplier,
                 isKnown: true
             )
         }
@@ -578,6 +754,14 @@ struct AzureModelPricing: Equatable, Codable {
                 inputPerMillionUSD: 30.00,
                 cachedInputPerMillionUSD: 3.00,
                 outputPerMillionUSD: 180.00,
+                longContext: AzureLongContextRates(
+                    thresholdInputTokens: azureLongContextThresholdInputTokens,
+                    inputPerMillionUSD: 60.00,
+                    // ASSUMED: the pricing page lists no cached rate for the pro long-context
+                    // tier. Kept at the same 0.1x ratio the short tier uses.
+                    cachedInputPerMillionUSD: 6.00,
+                    outputPerMillionUSD: 270.00
+                ),
                 isKnown: true
             )
         }
@@ -589,6 +773,13 @@ struct AzureModelPricing: Equatable, Codable {
                 inputPerMillionUSD: 5.00,
                 cachedInputPerMillionUSD: 0.50,
                 outputPerMillionUSD: 30.00,
+                longContext: AzureLongContextRates(
+                    thresholdInputTokens: azureLongContextThresholdInputTokens,
+                    inputPerMillionUSD: 10.00,
+                    cachedInputPerMillionUSD: 1.00,
+                    outputPerMillionUSD: 45.00
+                ),
+                fastModeMultiplier: fastMultiplier,
                 isKnown: true
             )
         }
@@ -626,6 +817,7 @@ struct AzureModelPricing: Equatable, Codable {
             )
         }
 
+        // GPT-5.4's Fast-mode surcharge is 2x, not the 2.5x the newer families carry.
         if normalized.contains("gpt-5-4") || normalized.contains("gpt-54") {
             return AzureModelPricing(
                 modelPattern: "gpt-5.4",
@@ -633,6 +825,13 @@ struct AzureModelPricing: Equatable, Codable {
                 inputPerMillionUSD: 2.50,
                 cachedInputPerMillionUSD: 0.25,
                 outputPerMillionUSD: 15.00,
+                longContext: AzureLongContextRates(
+                    thresholdInputTokens: azureLongContextThresholdInputTokens,
+                    inputPerMillionUSD: 5.00,
+                    cachedInputPerMillionUSD: 0.50,
+                    outputPerMillionUSD: 22.50
+                ),
+                fastModeMultiplier: provider == .openai ? 2.0 : nil,
                 isKnown: true
             )
         }
@@ -746,6 +945,31 @@ struct AzureModelPricing: Equatable, Codable {
         )
     }
 
+    /// True when the id names Opus 4.0 itself: `opus-4` at the end of the id, or followed by
+    /// a dated snapshot suffix (`-` + 8 digits, e.g. `claude-opus-4-20250514`). A version
+    /// suffix such as `opus-4-5` or `opus-4-8` is a different, cheaper model and must not match.
+    private static func isDatedOrBareOpus4(_ normalized: String) -> Bool {
+        var searchStart = normalized.startIndex
+        while let range = normalized.range(of: "opus-4", range: searchStart..<normalized.endIndex) {
+            let tail = normalized[range.upperBound...]
+            if tail.isEmpty {
+                return true
+            }
+            if tail.hasPrefix("-") {
+                let afterDash = tail.dropFirst()
+                let digits = afterDash.prefix(8)
+                let rest = afterDash.dropFirst(8)
+                if digits.count == 8,
+                   digits.allSatisfy(\.isNumber),
+                   rest.first?.isNumber != true {
+                    return true
+                }
+            }
+            searchStart = range.upperBound
+        }
+        return false
+    }
+
     private static func usd(_ value: Double) -> String {
         let formatter = NumberFormatter()
         formatter.numberStyle = .currency
@@ -760,14 +984,22 @@ struct AzureTokenUsage: Equatable, Hashable, Codable {
     var inputTokens: Int
     var cachedInputTokens: Int
     var cacheCreationInputTokens: Int
+    /// The part of `cacheCreationInputTokens` written to the 1-hour cache, which bills at a
+    /// higher rate than the 5-minute one. 0 when the log recorded no split.
+    var cacheCreation1hInputTokens: Int
     var outputTokens: Int
     var reasoningOutputTokens: Int
     var totalTokens: Int
+    /// Speed setting this request ran at. `.unknown` for records parsed from logs that
+    /// predate the setting being recorded.
+    var speed: AzureUsageSpeed
 
     var uncachedInputTokens: Int {
         max(0, inputTokens - cachedInputTokens - cacheCreationInputTokens)
     }
 
+    // `isZero` and `signature` are dedupe keys: the same request must keep producing the same
+    // signature across app versions, so neither ever gains a field.
     var isZero: Bool {
         inputTokens == 0 && cachedInputTokens == 0 && cacheCreationInputTokens == 0 && outputTokens == 0 && reasoningOutputTokens == 0
     }
@@ -783,9 +1015,11 @@ struct AzureTokenUsage: Equatable, Hashable, Codable {
             inputTokens: inputTokens,
             cachedInputTokens: cachedInputTokens,
             cacheCreationInputTokens: cacheCreationInputTokens,
+            cacheCreation1hInputTokens: cacheCreation1hInputTokens,
             outputTokens: newOutputTokens,
             reasoningOutputTokens: reasoningOutputTokens,
-            totalTokens: inputTokens + newOutputTokens
+            totalTokens: inputTokens + newOutputTokens,
+            speed: speed
         )
     }
 
@@ -793,26 +1027,35 @@ struct AzureTokenUsage: Equatable, Hashable, Codable {
         inputTokens: Int,
         cachedInputTokens: Int,
         cacheCreationInputTokens: Int = 0,
+        cacheCreation1hInputTokens: Int = 0,
         outputTokens: Int,
         reasoningOutputTokens: Int,
-        totalTokens: Int
+        totalTokens: Int,
+        speed: AzureUsageSpeed = .standard
     ) {
         self.inputTokens = inputTokens
         self.cachedInputTokens = cachedInputTokens
         self.cacheCreationInputTokens = cacheCreationInputTokens
+        self.cacheCreation1hInputTokens = cacheCreation1hInputTokens
         self.outputTokens = outputTokens
         self.reasoningOutputTokens = reasoningOutputTokens
         self.totalTokens = totalTokens
+        self.speed = speed
     }
 
+    /// The new per-request fields are decoded with `decodeIfPresent`: the live usage caches are
+    /// large JSON files written before these keys existed, and a throwing decode there would
+    /// drop the entire cached history, including records whose source log file is gone.
     init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         inputTokens = try container.decode(Int.self, forKey: .inputTokens)
         cachedInputTokens = try container.decode(Int.self, forKey: .cachedInputTokens)
         cacheCreationInputTokens = try container.decodeIfPresent(Int.self, forKey: .cacheCreationInputTokens) ?? 0
+        cacheCreation1hInputTokens = try container.decodeIfPresent(Int.self, forKey: .cacheCreation1hInputTokens) ?? 0
         outputTokens = try container.decode(Int.self, forKey: .outputTokens)
         reasoningOutputTokens = try container.decode(Int.self, forKey: .reasoningOutputTokens)
         totalTokens = try container.decode(Int.self, forKey: .totalTokens)
+        speed = try container.decodeIfPresent(AzureUsageSpeed.self, forKey: .speed) ?? .unknown
     }
 }
 
@@ -1007,8 +1250,40 @@ struct AzureUsageScanResult: Equatable, Codable {
     static let empty = AzureUsageScanResult()
 }
 
+/// How the estimated cost of the records in view splits into the plain short-context Standard
+/// price and the two per-request uplifts (long-context tier, Fast mode). Codex on the ChatGPT
+/// plan is the only provider with those uplifts today; for the others every extra is zero.
+struct AzureUsageCostBreakdown: Equatable, Codable {
+    var baseUSD = 0.0
+    var longContextExtraUSD = 0.0
+    var longContextRequestCount = 0
+    var fastModeExtraUSD = 0.0
+    var fastModeRequestCount = 0
+    var unknownSpeedRequestCount = 0
+    /// How much higher the estimate would be if every unknown-speed request had run in Fast mode.
+    var unknownSpeedExtraUSD = 0.0
+
+    var hasUplifts: Bool {
+        longContextRequestCount > 0 || fastModeRequestCount > 0 || unknownSpeedRequestCount > 0
+    }
+
+    init() {}
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        baseUSD = try container.decodeIfPresent(Double.self, forKey: .baseUSD) ?? 0
+        longContextExtraUSD = try container.decodeIfPresent(Double.self, forKey: .longContextExtraUSD) ?? 0
+        longContextRequestCount = try container.decodeIfPresent(Int.self, forKey: .longContextRequestCount) ?? 0
+        fastModeExtraUSD = try container.decodeIfPresent(Double.self, forKey: .fastModeExtraUSD) ?? 0
+        fastModeRequestCount = try container.decodeIfPresent(Int.self, forKey: .fastModeRequestCount) ?? 0
+        unknownSpeedRequestCount = try container.decodeIfPresent(Int.self, forKey: .unknownSpeedRequestCount) ?? 0
+        unknownSpeedExtraUSD = try container.decodeIfPresent(Double.self, forKey: .unknownSpeedExtraUSD) ?? 0
+    }
+}
+
 struct AzureUsageDashboard: Equatable, Codable {
     var totals = AzureUsageTokenTotals()
+    var costBreakdown = AzureUsageCostBreakdown()
     var byEndpointDeployment: [AzureUsageGroup] = []
     var byModel: [AzureUsageGroup] = []
     var byProject: [AzureUsageProjectGroup] = []

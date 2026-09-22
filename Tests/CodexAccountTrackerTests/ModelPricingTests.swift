@@ -52,15 +52,16 @@ final class ModelPricingTests: XCTestCase {
         // gpt-5.5-pro cached read is 3.00, not the old 30.00 bug.
         XCTAssertEqual(price("gpt-5.5-pro").cachedInputPerMillionUSD, 3.00, accuracy: 0.0001)
 
-        assertRates(price("gpt-5.6-sol"), pattern: "gpt-5.6-sol", input: 5.00, output: 30.00)
-        assertRates(price("gpt-5.6-terra"), pattern: "gpt-5.6-terra", input: 2.50, output: 15.00)
-        assertRates(price("gpt-5.6-luna"), pattern: "gpt-5.6-luna", input: 1.00, output: 6.00)
+        // 5.6 rates from https://developers.openai.com/api/docs/pricing (read 2026-09-21).
+        assertRates(price("gpt-5.6-sol"), pattern: "gpt-5.6-sol", input: 4.00, output: 20.00)
+        assertRates(price("gpt-5.6-terra"), pattern: "gpt-5.6-terra", input: 2.00, output: 12.00)
+        assertRates(price("gpt-5.6-luna"), pattern: "gpt-5.6-luna", input: 0.20, output: 1.20)
     }
 
     func testGPTNonHyphenatedAliases() {
         // These bare aliases appear verbatim in Codex session logs.
         assertRates(price("gpt-55"), pattern: "gpt-5.5", input: 5.00, output: 30.00)
-        assertRates(price("gpt-56"), pattern: "gpt-5.6-sol", input: 5.00, output: 30.00)
+        assertRates(price("gpt-56"), pattern: "gpt-5.6-sol", input: 4.00, output: 20.00)
         assertRates(price("gpt-52"), pattern: "gpt-5.2", input: 1.75, output: 14.00)
     }
 
@@ -103,7 +104,7 @@ final class ModelPricingTests: XCTestCase {
 
     func testCacheWriteRatesForNewerModels() {
         // 5.6 and current Claude models carry an explicit cache-write premium.
-        XCTAssertEqual(price("gpt-5.6-terra").cacheWritePerMillionUSD ?? 0, 3.125, accuracy: 0.0001)
+        XCTAssertEqual(price("gpt-5.6-terra").cacheWritePerMillionUSD ?? 0, 2.50, accuracy: 0.0001)
         XCTAssertEqual(price("claude-sonnet-5", .claudeCode).cacheWritePerMillionUSD ?? 0, 2.50, accuracy: 0.0001)
         XCTAssertEqual(price("claude-opus-4-8", .claudeCode).cacheWritePerMillionUSD ?? 0, 6.25, accuracy: 0.0001)
     }
